@@ -163,8 +163,7 @@ static noinline void cancel_boost(unsigned long flags)
 static noinline bool try_to_cancel_boost(struct heavy_task *htsk)
 {
 	if (htsk->boosting) {
-		htb_systrace_c_printk("boosting", htsk->task->pid,
-				      htsk->task->comm, 0);
+		htb_systrace_c_printk("boosting", htsk->pid, "", 0);
 		htsk->boosting = false;
 		if (--clusters_boost_state[htsk->cluster] <= 0) {
 			clusters_boost_state[htsk->cluster] = 0;
@@ -330,7 +329,7 @@ static noinline void mark_boost_flags(int i, struct task_struct *p, int cluster,
 {
 	if (i >= MAX_HEAVY_TASK_COUNT) return;
 	if (should_boost(&heavy_tasks[i], running_time, render_running)) {
-		htb_systrace_c_printk("boosting", p->pid, p->comm,
+		htb_systrace_c_printk("boosting", p->pid, "",
 				      (task_rq(p)->cpu + 1));
 		heavy_tasks[i].boosting = true;
 		cluster = get_task_cpu_cluster(p);
@@ -341,6 +340,24 @@ static noinline void mark_boost_flags(int i, struct task_struct *p, int cluster,
 			*boost_flags = (*boost_flags) | (1 << cluster);
 		}
 	}
+}
+
+static noinline bool handle_heavy_task_tainted(struct heavy_task *htsk,
+						struct task_struct *p,
+						unsigned long *cancel_flags)
+{
+	if (p == NULL || p != htsk->task) {
+		if (p) {
+			put_task_struct(p);
+		}
+		if (try_to_cancel_boost(htsk)) {
+			*cancel_flags = (*cancel_flags) | (1 << htsk->cluster);
+		}
+		htsk->task = NULL;
+		return true;
+	}
+
+	return false;
 }
 
 static noinline void htb_work_fn(struct kthread_work *work)
@@ -359,10 +376,7 @@ static noinline void htb_work_fn(struct kthread_work *work)
 	raw_spin_lock_irqsave(&htb_spinlock, flags);
 	for (i = 0; i < htsks_num && i < MAX_HEAVY_TASK_COUNT; i++) {
 		p = get_pid_task(find_vpid(heavy_tasks[i].pid), PIDTYPE_PID);
-		if (p == NULL)
-			continue;
-		if (p != heavy_tasks[i].task) {
-			put_task_struct(p);
+		if (handle_heavy_task_tainted(&heavy_tasks[i], p, &cancel_flags)) {
 			continue;
 		}
 		cluster = heavy_tasks[i].cluster;

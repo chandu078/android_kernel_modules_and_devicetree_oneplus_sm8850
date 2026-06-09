@@ -157,6 +157,7 @@ static inline const char *device_mode_to_string(uint32_t idx)
 	CASE_RETURN_STRING(PM_NDI_MODE);
 	CASE_RETURN_STRING(PM_NAN_DISC_MODE);
 	CASE_RETURN_STRING(PM_LL_LT_SAP_MODE);
+	CASE_RETURN_STRING(PM_PASSTHRU_MODE);
 	default:
 		return "Unknown";
 	}
@@ -492,6 +493,22 @@ policy_mgr_get_sta_sap_scc_lte_coex_chnl(struct wlan_objmgr_psoc *psoc,
  */
 QDF_STATUS policy_mgr_get_sap_mandt_chnl(struct wlan_objmgr_psoc *psoc,
 					 uint8_t *sap_mandt_chnl);
+
+/*
+ * policy_mgr_get_sap_force_20mhz_for_country_id() - to find out if SAP
+ * force 20Mhz is enabled and country code is ID
+ * @psoc: pointer to psoc
+ * @freq: freq
+ *
+ * This API is used to find out whether SAP's force 20Mhz support
+ * is enabled
+ *
+ * Return: bool
+ */
+bool
+policy_mgr_get_sap_force_20mhz_for_country_id(
+					struct wlan_objmgr_psoc *psoc,
+					qdf_freq_t freq);
 /**
  * policy_mgr_get_indoor_chnl_marking() - to get if indoor channel can be
  *						marked as disabled
@@ -4311,9 +4328,9 @@ policy_mgr_restrict_sap_on_unsafe_chan(struct wlan_objmgr_psoc *psoc)
 #endif
 
 /**
- * policy_mgr_is_sap_freq_allowed - Check if the channel is allowed for sap
+ * policy_mgr_is_unsafe_freq_allowed - Check if the unsafe channel is allowed
  * @psoc: PSOC object information
- * @opmode: Current op_mode, helps to check whether it's P2P_GO/SAP
+ * @vdev_id: vdev id
  * @sap_freq: channel frequency to be checked
  *
  * Check the factors as below to decide whether the channel is allowed or not:
@@ -4323,9 +4340,8 @@ policy_mgr_restrict_sap_on_unsafe_chan(struct wlan_objmgr_psoc *psoc)
  *
  * Return: true for allowed, else false
  */
-bool policy_mgr_is_sap_freq_allowed(struct wlan_objmgr_psoc *psoc,
-				    enum QDF_OPMODE opmode,
-				    uint32_t sap_freq);
+bool policy_mgr_is_unsafe_freq_allowed(struct wlan_objmgr_psoc *psoc,
+				       uint8_t vdev_id, uint32_t sap_freq);
 
 #ifdef FEATURE_WLAN_SAP_COEX_CHECK_BW
 /**
@@ -4621,22 +4637,6 @@ bool policy_mgr_is_sap_override_dfs_required(struct wlan_objmgr_pdev *pdev,
 bool policy_mgr_is_sta_sap_scc_allowed_on_dfs_chan(
 		struct wlan_objmgr_psoc *psoc);
 
-/**
- * policy_mgr_is_multi_sap_allowed_on_same_band() - check if multi sap allowed
- * on same band
- * @pdev: id of objmgr pdev
- * @mode: operating mode of interface to be checked
- * @ch_freq: channel freq
- * @vdev_id: vdev id
- * This function is used to check if multi sap can be started on the same band
- *
- * Return: true if multi sap is allowed on same band, otherwise false
- */
-bool policy_mgr_is_multi_sap_allowed_on_same_band(
-					struct wlan_objmgr_pdev *pdev,
-					enum policy_mgr_con_mode mode,
-					qdf_freq_t ch_freq,
-					uint8_t vdev_id);
 /**
  * policy_mgr_is_owe_connection_present() - TO check if owe conn present
  * @pdev: pdev handle
@@ -6434,6 +6434,17 @@ policy_mgr_is_3vifs_mcc_to_scc_enabled(struct wlan_objmgr_psoc *psoc)
  */
 void policy_mgr_update_flow_pool_map(struct wlan_objmgr_psoc *psoc,
 				     struct wlan_objmgr_vdev *vdev);
+
+/**
+ * policy_mgr_update_flow_pool_unmap() - Remove flow pool map for the given vdev
+ * @psoc: Pointer to PSOC object
+ * @vdev: Pointer to object manager vdev
+ *
+ * Return: None
+ */
+void policy_mgr_update_flow_pool_unmap(struct wlan_objmgr_psoc *psoc,
+				       struct wlan_objmgr_vdev *vdev);
+
 /**
  * policy_mgr_get_conc_ml_sap_link_freq()- Get concurrent ML SAP link frequency
  * @psoc: Pointer to Psoc
@@ -6471,4 +6482,31 @@ uint8_t policy_mgr_fetch_scc_vdev_id(struct wlan_objmgr_psoc *psoc,
 bool
 policy_mgr_is_conc_sap_ready_for_mcc_to_scc_trans(
 	struct wlan_objmgr_psoc *psoc);
+
+/**
+ * policy_mgr_is_cfr_allowed() - check if CFR is allowed
+ * value
+ * @psoc: psoc pointer
+ *
+ * Return: true if allowed
+ */
+bool
+policy_mgr_is_cfr_allowed(struct wlan_objmgr_psoc *psoc);
+
+#ifdef DRIVER_PASSTHRU_MODE
+/**
+ * policy_mgr_is_chan_change_allowed_for_passthru() - check if channel change
+ *  is allowed for passthru vdev
+ * @psoc: psoc pointer
+ * @vdev_id: vdev id
+ * @freq: channel frequency
+ * @bw: bandwidth
+ *
+ * Return: true if allowed else false
+ */
+bool
+policy_mgr_is_chan_change_allowed_for_passthru(struct wlan_objmgr_psoc *psoc,
+					       uint8_t vdev_id, uint32_t freq,
+					       enum hw_mode_bandwidth bw);
+#endif
 #endif /* __WLAN_POLICY_MGR_API_H */

@@ -3322,12 +3322,27 @@ static int __cam_isp_ctx_handle_buf_done_verify_addr(
 	bool irq_delay_detected = false;
 	struct cam_ctx_request *req;
 	struct cam_ctx_request *next_req = NULL;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	struct cam_isp_ctx_req *req_isp;
+#endif
 	struct cam_context *ctx = ctx_isp->base;
 
 	if (list_empty(&ctx->active_req_list)) {
 		return __cam_isp_ctx_check_deferred_buf_done(
 			ctx_isp, done, bubble_state);
 	}
+
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if (!list_empty(&ctx->wait_req_list)) {
+		req = list_first_entry(&ctx->wait_req_list, struct cam_ctx_request, list);
+		req_isp = (struct cam_isp_ctx_req *) req->req_priv;
+		if (__cam_isp_ctx_check_buf_done_match_for_request(ctx_isp,
+			req_isp, done, ctx_isp->frmhdr_verify_buf_done)) {
+			return __cam_isp_ctx_check_deferred_buf_done(
+				ctx_isp, done, bubble_state);
+		}
+	}
+#endif
 
 	req = list_first_entry(&ctx->active_req_list,
 			struct cam_ctx_request, list);

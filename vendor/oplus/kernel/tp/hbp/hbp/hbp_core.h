@@ -3,6 +3,9 @@
 
 #include <linux/irqreturn.h>
 #include <linux/firmware.h>
+#include <linux/hrtimer.h>
+#include <linux/workqueue.h>
+#include <linux/atomic.h>
 
 #include "hbp_report.h"
 #include "hbp_notify.h"
@@ -330,7 +333,7 @@ struct hbp_device {
 	struct clk *pen_ck;
 	/* edge grip for fingerprint */
 	bool fp_grip_support;
-	bool fp_grip_hold;
+	atomic_t fp_grip_hold; /* shared by IRQ writer and resume reader, use atomic to avoid TOCTOU */
 	int fp_grip_enable;
 };
 
@@ -379,6 +382,13 @@ struct hbp_core {
 
 	bool in_hbp_mode;
 	struct exception_data    exception_data; /*exception_data monitor data*/
+
+	/* workqueue for state notify */
+	struct workqueue_struct *state_notify_wq;
+	struct work_struct state_notify_work;
+	struct mutex state_notify_mtx;  /* protect state_notify_id, state_notify_event and states[] */
+	int state_notify_id;
+	hbp_panel_event state_notify_event;
 };
 
 extern int hbp_exception_report(hbp_excep_type excep_tpye,

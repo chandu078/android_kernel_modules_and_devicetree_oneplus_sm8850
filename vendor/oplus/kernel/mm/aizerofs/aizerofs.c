@@ -276,7 +276,9 @@ static long aizerofs_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 				tasks[i] = kthread_create(aizerofs_io_task, &io[i], "aizerofs_io/%d", i);
 				if (IS_ERR(tasks[i])) {
 					put_cred(io[i].cred);
-					pr_err("%s failed to create io thread%d\n", __func__, i);
+					io[i].cred = NULL;
+					pr_err("%s: failed to create io thread %d: err %ld\n",
+					       __func__, i, PTR_ERR(tasks[i]));
 					break;
 				}
 			}

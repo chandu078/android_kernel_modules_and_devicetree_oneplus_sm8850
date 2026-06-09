@@ -898,7 +898,13 @@ int sde_plane_get_scanout_info(struct sde_plane *psde,
 	 */
 	if (aspace && pstate->defer_prepare_fb) {
 		SDE_EVT32(DRMID(&psde->base), psde->pipe, aspace->domain_attached);
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_BEGIN("msm_framebuffer_prepare defer");
+#endif
 		ret = msm_framebuffer_prepare(fb, pstate->aspace);
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_END("msm_framebuffer_prepare defer");
+#endif
 		if (ret) {
 			SDE_ERROR_PLANE(psde,
 					"failed to prepare framebuffer %d\n", ret);
@@ -2311,8 +2317,14 @@ static int sde_plane_prepare_fb(struct drm_plane *plane,
 	}
 
 	if (pstate->aspace && fb) {
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_BEGIN("msm_framebuffer_prepare");
+#endif
 		ret = msm_framebuffer_prepare(fb,
 				pstate->aspace);
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_END("msm_framebuffer_prepare");
+#endif
 		if (ret) {
 			SDE_ERROR("failed to prepare framebuffer fb:%d plane:%d pipe:%d ret:%d\n",
 				 fb->base.id, plane->base.id, psde->pipe, ret);
@@ -4348,7 +4360,13 @@ static void sde_plane_atomic_update(struct drm_plane *plane,
 	if (!sde_plane_enabled(state)) {
 		_sde_plane_atomic_disable(plane, old_state);
 	} else {
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_BEGIN("sde_plane_sspp_atomic_update");
+#endif
 		ret = sde_plane_sspp_atomic_update(plane, old_state);
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_ATRACE_END("sde_plane_sspp_atomic_update");
+#endif
 		/* atomic_check should have ensured that this doesn't fail */
 		WARN_ON(ret < 0);
 	}

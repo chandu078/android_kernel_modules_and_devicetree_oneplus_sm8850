@@ -9,9 +9,11 @@
 #include <linux/mmzone.h>
 #include <linux/vmalloc.h>
 #include <linux/proc_fs.h>
-#ifdef CONFIG_CONT_PTE_HUGEPAGE
-#include "../../../mm/chp_ext.h"
-#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
+enum mtrack_vh_type {
+	MTRACK_VH_SHMEM_SWAPED,
+	MTRACK_VH_MAX,
+};
 
 enum mtrack_type {
 	MTRACK_ASHMEM,
@@ -121,18 +123,6 @@ static inline unsigned long sys_sharedram(void)
 	return global_node_page_state(NR_SHMEM);
 }
 
-#ifdef CONFIG_CONT_PTE_HUGEPAGE
-static inline unsigned long sys_chp_pool_cma(void)
-{
-	return chp_read_info_ext(CHP_EXT_CMD_POOL_CMA_COUNT) * HPAGE_CONT_PTE_NR;
-}
-
-static inline unsigned long sys_chp_pool_buddy(void)
-{
-	return chp_read_info_ext(CHP_EXT_CMD_POOL_BUDDY_COUNT) * HPAGE_CONT_PTE_NR;
-}
-#endif
-
 static inline unsigned long sys_free_cma(void)
 {
 	return global_zone_page_state(NR_FREE_CMA_PAGES);
@@ -148,10 +138,11 @@ void unregister_mtrack_procfs(enum mtrack_type t, const char *name);
 
 int sys_memstat_init(struct proc_dir_entry *root);
 int sys_memstat_exit(void);
-inline long read_mtrack_mem_usage(enum mtrack_type t, enum mtrack_subtype s);
-inline long read_pid_mtrack_mem_usage(enum mtrack_type t, enum mtrack_subtype s,
+long read_mtrack_vh_mem_usage(enum mtrack_vh_type t);
+long read_mtrack_mem_usage(enum mtrack_type t, enum mtrack_subtype s);
+long read_pid_mtrack_mem_usage(enum mtrack_type t, enum mtrack_subtype s,
 				      pid_t pid);
-inline void dump_mtrack_usage_stat(enum mtrack_type t, bool verbose);
+void dump_mtrack_usage_stat(enum mtrack_type t, bool verbose);
 
 void seq_put_decimal_ull_width_dup(struct seq_file *m, const char *delimiter,
 				   unsigned long long num, unsigned int width);

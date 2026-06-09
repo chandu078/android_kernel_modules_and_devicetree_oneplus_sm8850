@@ -9,6 +9,8 @@ targets = [
     "vienna",
     "pineapple",
     "seraph",
+    "hamoa",
+    "chora",
 ]
 
 la_variants = [
@@ -20,6 +22,7 @@ la_variants = [
 
 le_targets = [
     # keep sorted
+    "alor-le",
     "sun-allyes",
 ]
 
@@ -30,6 +33,7 @@ le_32_targets = [
 
 le_variants = [
     # keep sorted
+    "debug-defconfig",
     "perf-defconfig",
 ]
 
@@ -47,6 +51,8 @@ vm_types = [
 vm_target_bases = [
     "sun",
     "canoe",
+    "hamoa",
+    "chora",
 ]
 
 vm_targets = ["{}-{}".format(t, vt) for t in vm_target_bases for vt in vm_types]

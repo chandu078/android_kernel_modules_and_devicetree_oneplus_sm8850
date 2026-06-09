@@ -106,6 +106,7 @@
 #define HEALTH_REPORT_RST_WD        "wd_rst"
 #define HEALTH_REPORT_RST_OTHER     "other_rst"
 #define HEALTH_REPORT_GLOVE_ENTER	"glove_enterTimes"
+#define HEALTH_REPORT_FW_FD			"firmware_fd"
 
 #define FINGERPRINT_DOWN_DETECT 0X0f
 #define FINGERPRINT_UP_DETECT 0X1f
@@ -246,6 +247,7 @@ typedef enum {
 	MODE_EDGE,
 	MODE_GESTURE,
 	MODE_GLOVE,
+	MODE_RAINSTORM,
 	MODE_CHARGE,
 	MODE_GAME,
 	MODE_PALM_REJECTION,
@@ -1074,6 +1076,7 @@ struct touchpanel_data {
 	bool register_is_16bit;                             /*register is 16bit*/
 	bool glove_mode_support;                            /*glove_mode support feature*/
 	bool glove_mode_v2_support;                         /*glove_mode support feature*/
+	bool rainstorm_mode_v2_support;                     /*rainstorm_mode support feature*/
 	bool leather_cover_mode_support;                    /*leather_cover support feature*/
 	bool black_gesture_support;                         /*black_gesture support feature*/
 	bool black_gesture_indep_support;                   /*black_gesture indep control support feature*/
@@ -1121,6 +1124,7 @@ struct touchpanel_data {
 	bool tp_data_record_support;                        /*feature used to data record when get tp log*/
 	bool suspend_work_support;                          /*feature used to support suspend work queue*/
 	int glove_enable;                                   /*control state of glove gesture*/
+	int rainstorm_enable;                               /*control state of rainstorm mode*/
 	int pocket_prevent_mode;
 	int leather_cover_enable;                           /*control state of leather_cover gesture*/
 	bool force_bus_ready_support;                       /*force bus ready to true afer notify*/
@@ -1136,6 +1140,7 @@ struct touchpanel_data {
 	bool fp_grip_hold;
 	bool idle_freq_support;
 	int  fp_grip_enable;
+	int idle_freq_enable;
 	u8 aiunit_game_get_num;
 	u8 aiunit_game_set_num;
 	int aiunit_game_enable;

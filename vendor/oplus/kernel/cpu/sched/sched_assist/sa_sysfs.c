@@ -56,7 +56,7 @@ int global_silver_perf_core;
 EXPORT_SYMBOL(global_silver_perf_core);
 int global_lowend_plat_opt;
 EXPORT_SYMBOL(global_lowend_plat_opt);
-int global_sched_group_enabled = 0;
+int global_sched_group_enabled = 3;
 EXPORT_SYMBOL(global_sched_group_enabled);
 /*DDL default enable*/
 int global_sched_ddl_enabled = 1;

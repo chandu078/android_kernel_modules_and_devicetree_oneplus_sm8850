@@ -46,6 +46,10 @@ _target_chipset_map = {
         "peach-v2",
         "kiwi-v2",
         "wcn7750",
+	"wcn6450",
+    ],
+    "alor-le": [
+        "wcn7750",
     ],
     "sdxkova": [
         "kiwi-v2",
@@ -63,6 +67,13 @@ _target_chipset_map = {
         "qca6490_cnss2",
         "kiwi-v2",
     ],
+    "hamoa": [
+        "kiwi-v2",
+    ],
+    "chora": [
+	"wcn7750",
+	"wcn6450",
+    ]
 }
 
 _chipset_hw_map = {
@@ -1830,7 +1841,7 @@ _conditional_srcs = {
             "cmn/target_if/cfr/src/target_if_cfr_enh.c",
         ],
     },
-    "CONFIG_WLAN_FASTPATH": {
+    "CONFIG_WLAN_FASTPATH_AND_NOT_RHINE": {
         True: [
             "core/dp/txrx/ol_tx_ll_fastpath.c",
         ],
@@ -2728,7 +2739,7 @@ def _define_module_for_target_variant_chipset(target, variant, chipset):
             "//dataipa:include_headers",
             "//dataipa:{}_{}_ipam".format(target, variant),
         ]
-    elif target != "x1e80100" and target != "anorak" and target != "neo-la" and target != "seraph" and target != "autogvm" and target != "autoghgvm":
+    elif target != "x1e80100" and target != "anorak" and target != "neo-la" and target != "seraph" and target != "autogvm" and target != "autoghgvm" and target != "hamoa" and target != "alor-le":
         deps = deps + [
             "//vendor/qcom/opensource/dataipa:include_headers",
             "//vendor/qcom/opensource/dataipa:{}_{}_ipam".format(target, variant),
@@ -2746,6 +2757,36 @@ def _define_module_for_target_variant_chipset(target, variant, chipset):
             "//build_dir/{}/linux-{}/dataipa-{}:include_headers".format(tgt, board, ipa_ver),
             "//build_dir/{}/linux-{}/dataipa-{}:{}_{}_ipam".format(tgt, board, ipa_ver, target, variant),
         ]
+
+    deps = deps + select({
+        ":wonder_enabled": [
+	    # Add dependency of wonder here
+	    "//vendor/qcom/proprietary/wlan/noship/passthru-test-suite-internal:{}_passthru_test".format(tv),
+	    "//vendor/qcom/proprietary/wlan/noship/passthru-test-suite-internal:passthru_test_headers",
+        ],
+        "//conditions:default": [],
+    })
+
+    wonder_srcs = "wonder_srcs_{}".format(tvc)
+    native.filegroup(
+        name = wonder_srcs,
+        # Controlled via Kconfig symbol CONFIG_WONDER_SUPPORT (see conditional_srcs below)
+        srcs = [
+            "core/hdd/src/wlan_hdd_wondertap.c",
+        ],
+        visibility = ["//visibility:private"],
+    )
+
+    combined_conditional_srcs = dict(_conditional_srcs)
+    wonder_kcfg_key = "CONFIG_WONDER_SUPPORT"
+    existing_inner = combined_conditional_srcs.get(wonder_kcfg_key, {})
+    existing_true_list = existing_inner.get(True, [])
+    existing_true_list = existing_true_list + [
+            ":{}".format(wonder_srcs),
+    ]
+    existing_inner = dict(existing_inner)
+    existing_inner[True] = existing_true_list
+    combined_conditional_srcs[wonder_kcfg_key] = existing_inner
 
     print("name=", name)
     print("hw=", hw)
@@ -2767,7 +2808,7 @@ def _define_module_for_target_variant_chipset(target, variant, chipset):
         #ifdef OPLUS_FEATURE_WIFI_FTM
         local_defines = ["OPLUS_FEATURE_WIFI_BDF", "OPLUS_FEATURE_WIFI_MAC", "OPLUS_FEATURE_WIFI_FTM", "OPLUS_FEATURE_WIFI_DCS_SWITCH","OPLUS_BUG_STABILITY","OPLUS_FEATURE_CONN_POWER_MONITOR", "OPLUS_FEATURE_WIFI_VENDOR_FT"],
         #endif /*OPLUS_FEATURE_WIFI_FTM*/
-        conditional_srcs = _conditional_srcs,
+        conditional_srcs = combined_conditional_srcs,
         copts = copts,
         out = out,
         kernel_build = kernel_build,
@@ -2791,7 +2832,7 @@ def define_dist(target, variant, chipsets):
             mode_overrides = {"**/*": "644"},
             log = "info",
         )
-    if target != "sdxkova":
+    if target != "sdxkova" and target != "alor-le":
         copy_to_dist_dir(
             name = "{}_all_modules_dist".format(tv),
             data = dataList,

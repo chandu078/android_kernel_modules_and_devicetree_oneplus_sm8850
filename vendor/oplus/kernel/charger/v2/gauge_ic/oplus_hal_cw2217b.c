@@ -825,7 +825,20 @@ static int cw2217_get_battery_temperature(void)
 
 static int cw2217_get_batt_remaining_capacity(void)
 {
-	return g_cw_bat->ui_soc * g_cw_bat->rated_capacity / g_cw_bat->cw_ui_full;
+	int ic_soc_accurate = 0;
+	int fcc = 0;
+	int rm = 0;
+
+	if (!g_cw_bat) {
+		chg_err("g_cw_bat is NULL");
+		return 0;
+	}
+
+	ic_soc_accurate = g_cw_bat->ic_soc_h * CW_SOC_MAGIC_BASE + g_cw_bat->ic_soc_l;
+	fcc = g_cw_bat->soh * g_cw_bat->rated_capacity / SOH_INIT_VALUE;
+	rm = ic_soc_accurate * fcc / CW_SOC_MAGIC_BASE / CW_SOC_MAGIC_100;
+
+	return rm;
 }
 
 static int cw2217_get_battery_soc(void)
@@ -960,12 +973,16 @@ static int battery_type_check(struct cw_battery *cw_bat)
 								length);
 	}
 
-        value = get_batt_id_chan_value(cw_bat);
-	if (value <= 0) {
+	value = get_batt_id_chan_value(cw_bat);
+	if (value == -EPROBE_DEFER) {
+		chg_err("[OPLUS_CHG][%s]: IIO channel not ready, deferring probe\n", __func__);
+		return value;
+	} else if (value <= 0) {
 		chg_err("[OPLUS_CHG][%s]: iio_read_channel_processed  get error\n", __func__);
 		value = NTC_DEFAULT_VOLT_VALUE_MV;
 		return battery_type;
 	}
+
 	value = value / THERMAL_TEMP_UNIT;
 	for (i = 0; i < BATTID_ARR_LEN; i++) {
 		if (value >= cw_bat->batid_voltage_range[i][0] && value <= cw_bat->batid_voltage_range[i][1]) {
@@ -1785,8 +1802,8 @@ static int cw2217_probe(struct i2c_client *client, const struct i2c_device_id *i
 
 	ret = cw2217_device_init(cw_bat);
 	if (ret) {
-		chg_err("%s : cw2217_device_init fail!\n", __func__);
-		return ret;
+		chg_err("%s : cw2217_device_init fail! ret = %d\n", __func__, ret);
+		goto error;
 	}
         chg_err("cw2217 driver probe success!\n");
 
@@ -1807,6 +1824,11 @@ static int cw2217_probe(struct i2c_client *client, const struct i2c_device_id *i
 	return NUM_0;
 
 error:
+	cancel_delayed_work_sync(&cw_bat->cw_track_update_work);
+	if (cw_bat->cwfg_workqueue) {
+		cancel_delayed_work_sync(&cw_bat->battery_delay_work);
+		destroy_workqueue(cw_bat->cwfg_workqueue);
+	}
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CHG_DEBUG_KIT)
 regmap_init_err:
 #endif

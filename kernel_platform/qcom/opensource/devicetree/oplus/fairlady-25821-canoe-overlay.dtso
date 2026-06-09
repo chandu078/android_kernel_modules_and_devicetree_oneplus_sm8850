@@ -9,6 +9,7 @@
 #include "sensor/fairlady-sensor-25821.dtsi"
 #include "oplus_uff/oplus-uff-25821.dtsi"
 #include "mm/fairlady-25821-canoe-mm.dtsi"
+#include "security/fairlady-25821-canoe-security.dtsi"
 #include "oplus_nfc/fairlady-sn220.dtsi"
 #include "oplus_icc/fairlady-25821-icc.dtsi"
 #include "oplus_misc/oplus-misc-25821.dtsi"

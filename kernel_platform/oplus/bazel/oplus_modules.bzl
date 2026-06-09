@@ -160,6 +160,11 @@ def define_oplus_ddk_modules(target, msm_target, variant):
         "//vendor/oplus/kernel/patch:oplus_patch",
     ]
 
+    if "canoe" in str(target) :
+        oplus_ddk_targets += [
+            "//vendor/oplus/kernel/wifi:wonder",
+        ]
+
     #conditional_build modules
     oplus_feature_list = oplus_ddk_get_oplus_features()
     if str(oplus_feature_list.get("OPLUS_FEATURE_BSP_DRV_INJECT_TEST", 'foo')).upper() == "1":

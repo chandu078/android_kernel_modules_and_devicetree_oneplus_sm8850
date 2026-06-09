@@ -254,6 +254,7 @@ struct oplus_ofp_params {
 													 bit(1):a mirror to the end aod mode is enabled
 													 bit(2):full screen aod mode is enabled
 													*/
+	bool low_pwm_aod_mode;
 	unsigned int aod_off_frame_cost;				/*
 													 indicates how manty frames cost from aod off cmd sent to normal frame, "0" means once aod off cmd sent
 													 the next frame will be normal frame
@@ -411,5 +412,9 @@ ssize_t oplus_ofp_set_longrui_aod_mode_attr(struct kobject *obj,
 	struct kobj_attribute *attr, const char *buf, size_t count);
 ssize_t oplus_ofp_get_longrui_aod_config_attr(struct kobject *obj,
 	struct kobj_attribute *attr, char *buf);
+int oplus_ofp_set_low_pwm_aod_mode(void *buf);
+//int oplus_ofp_get_low_pwm_aod_mode(void *buf);
+ssize_t oplus_ofp_set_low_pwm_aod_mode_attr(struct kobject *obj,
+	struct kobj_attribute *attr, const char *buf, size_t count);
 
 #endif /*_OPLUS_ONSCREENFINGERPRINT_H_*/

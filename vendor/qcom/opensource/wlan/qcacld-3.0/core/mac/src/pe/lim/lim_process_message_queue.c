@@ -1989,6 +1989,7 @@ static void lim_process_messages(struct mac_context *mac_ctx,
 	case SIR_LIM_AUTH_FAIL_TIMEOUT:
 	case SIR_LIM_AUTH_RSP_TIMEOUT:
 	case SIR_LIM_ASSOC_FAIL_TIMEOUT:
+	case SIR_LIM_DEAUTH_ACK_TIMEOUT:
 	case SIR_LIM_REASSOC_FAIL_TIMEOUT:
 	case SIR_LIM_FT_PREAUTH_RSP_TIMEOUT:
 	case SIR_LIM_DISASSOC_ACK_TIMEOUT:
@@ -2248,6 +2249,16 @@ static void lim_process_messages(struct mac_context *mac_ctx,
 		break;
 	case WNI_SME_UPDATE_RNR_IES:
 		lim_process_sme_req_messages(mac_ctx, msg);
+		qdf_mem_free((void *)msg->bodyptr);
+		msg->bodyptr = NULL;
+		break;
+	case eWNI_SME_PASSTHRU_INIT_SESSION:
+		lim_passthrough_init_session(mac_ctx, msg->bodyptr);
+		qdf_mem_free((void *)msg->bodyptr);
+		msg->bodyptr = NULL;
+		break;
+	case eWNI_SME_PASSTHRU_DEINIT_SESSION:
+		lim_passthrough_deinit_session(mac_ctx, msg->bodyptr);
 		qdf_mem_free((void *)msg->bodyptr);
 		msg->bodyptr = NULL;
 		break;

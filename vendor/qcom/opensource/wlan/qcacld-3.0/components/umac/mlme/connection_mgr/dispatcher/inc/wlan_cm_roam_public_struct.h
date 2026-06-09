@@ -1996,6 +1996,8 @@ enum wlan_roam_offload_scan_rssi_flags {
  * @roam_data_rssi_threshold: Bad data RSSI threshold to roam
  * @rx_data_inactivity_time: Rx duration to check data RSSI
  * @flags: Flags for roam scan RSSI threshold params
+ * @bg_roam_scan_flag: To set bg_roam_scan flag
+ *		       WMI_ROAM_BG_SCAN_FLAGS_2G_TO_5G_ONLY
  */
 struct wlan_roam_offload_scan_rssi_params {
 	int8_t rssi_thresh;
@@ -2028,6 +2030,7 @@ struct wlan_roam_offload_scan_rssi_params {
 	int32_t roam_data_rssi_threshold;
 	uint32_t rx_data_inactivity_time;
 	uint32_t flags;
+	bool bg_roam_scan_flag;
 };
 
 /**
@@ -2517,6 +2520,8 @@ struct roam_frame_info {
  * @RSO_NDP_CON_ON_NDI: disable roaming due to NDP connection on NDI
  * @RSO_SET_PCL: Disable roaming to set pcl to firmware
  * @RSO_SET_LINK: Avoid enable roaming due to SET_LINK is in progress
+ * @RSO_PASSTHRU_SET_CHANNEL: disable roaming temporarily when set
+ *  set channel operation is ongoing on passthru vdev.
  */
 enum wlan_cm_rso_control_requestor {
 	RSO_INVALID_REQUESTOR,
@@ -2527,6 +2532,7 @@ enum wlan_cm_rso_control_requestor {
 	RSO_NDP_CON_ON_NDI     = BIT(4),
 	RSO_SET_PCL            = BIT(5),
 	RSO_SET_LINK           = BIT(6),
+	RSO_PASSTHRU_SET_CHANNEL = BIT(7),
 };
 #endif
 
@@ -2859,6 +2865,8 @@ struct roam_pmkid_req_event {
  * @send_roam_frequencies: send roam frequencies to FW
  * @send_roam_idle_trigger: Send roam idle params to FW
  * @send_roam_disconnect_params: Send roam disconnect params to FW
+ * @allow_pm_after_roam_sync: Allow runtime PM suspernd after roam synch
+ * is complete
  */
 struct wlan_cm_roam_tx_ops {
 	QDF_STATUS (*send_vdev_set_pcl_cmd)(struct wlan_objmgr_vdev *vdev,
@@ -2932,6 +2940,7 @@ struct wlan_cm_roam_tx_ops {
 	QDF_STATUS (*send_roam_disconnect_params)(wmi_unified_t wmi_handle,
 						  uint8_t command,
 						  struct wlan_roam_disconnect_params *req);
+	void (*allow_pm_after_roam_sync)(struct wlan_objmgr_psoc *psoc);
 };
 
 /**

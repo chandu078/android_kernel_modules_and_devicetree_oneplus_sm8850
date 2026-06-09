@@ -103,10 +103,8 @@
 
 #define UX_PRIORITY_TOP_APP		0x0A000000
 #define UX_PRIORITY_AUDIO		0x0A000000
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 #define UX_PRIORITY_PIPELINE_UI 0x06000000
 #define UX_PRIORITY_PIPELINE    0x05000000
-#endif
 
 /* define for sched assist scene type, keep same as the define in java file */
 #define SA_SCENE_OPT_CLEAR			(0)
@@ -230,6 +228,7 @@ extern int global_sched_assist_enabled;
 extern int global_sched_assist_scene;
 extern int global_silver_perf_core;
 extern int global_sched_group_enabled;
+extern bool global_less_prime_cpu_arch;
 
 struct rq;
 
@@ -618,7 +617,7 @@ static inline bool sched_assist_scene(unsigned int scene)
 static inline unsigned long oplus_task_util(struct task_struct *p)
 {
 #if IS_ENABLED(CONFIG_SCHED_WALT)
-	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(p);
 
 	return wts->demand_scaled;
 #else
@@ -629,7 +628,7 @@ static inline unsigned long oplus_task_util(struct task_struct *p)
 #if IS_ENABLED(CONFIG_SCHED_WALT)
 static inline u32 task_wts_sum(struct task_struct *tsk)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) tsk->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(tsk);
 
 	return wts->sum;
 }
@@ -719,6 +718,7 @@ void set_im_flag_with_bit(int im_flag, struct task_struct *task);
 void android_vh_cgroup_set_task_handler(void *unused, int ret, struct task_struct *task);
 /* register vendor hook in kernel/signal.c  */
 void android_vh_exit_signal_handler(void *unused, struct task_struct *p);
+void sched_setaffinity_tracking(struct task_struct *task, const struct cpumask *in_mask);
 void android_rvh_set_cpus_allowed_comm_handler(void *unused, struct task_struct *task, const struct cpumask *new_mask);
 void android_rvh_setscheduler_handler(void *unused, struct task_struct *p);
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_BAN_APP_SET_AFFINITY)

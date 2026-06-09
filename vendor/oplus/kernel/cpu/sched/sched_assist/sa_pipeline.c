@@ -44,7 +44,11 @@ static unsigned long allowed_no_pipeline_task_util = ALLOWED_NO_PIPELINE_TASK_DE
 static int prime_cpu_num = 1;
 static int rt_skip_extra_pipeline_cpu = -1;
 static bool dislike_no_pipeline_task_run_on_prime_cpu = true;
-static char immuned_thread_name[16] = {0};
+static char dynamic_immuned_thread1[16] = {0};
+static char dynamic_immuned_thread2[16] = {0};
+static char __rcu *dynamic_immuned_thread1_rcu = NULL;
+static char __rcu *dynamic_immuned_thread2_rcu = NULL;
+static atomic_t updating_dynamic_immuned_thread = ATOMIC_INIT(0);
 
 #define PIPELINE_TASK_UX_STATE (UX_PRIORITY_PIPELINE | SA_TYPE_HEAVY)
 #define PIPELINE_UI_TASK_UX_STATE (UX_PRIORITY_PIPELINE_UI | SA_TYPE_LIGHT)
@@ -102,7 +106,7 @@ EXPORT_SYMBOL_GPL(oplus_get_task_pipeline_cpu);
 static inline unsigned long task_util(struct task_struct *p)
 {
 #if IS_ENABLED(CONFIG_SCHED_WALT)
-	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(p);
 	return wts->demand_scaled;
 #else
 	return max(READ_ONCE(p->se.avg.util_avg), READ_ONCE(p->se.avg.util_est) & ~UTIL_AVG_UNCHANGED);
@@ -217,7 +221,7 @@ static void systrace_pids_cpus_printk(void)
 #if IS_ENABLED(CONFIG_SCHED_WALT)
 static inline unsigned int pipeline_task_avg_util_trace(struct task_struct *p, unsigned int divisor)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(p);
 	unsigned int coloc_demand = wts->coloc_demand;
 
 	if (divisor > 0)
@@ -235,7 +239,7 @@ static inline unsigned int pipeline_task_avg_util_trace(struct task_struct *p, u
 
 static inline void pipeline_task_sum_util_trace(struct task_struct *p, unsigned int divisor, int i)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(p);
 	unsigned int coloc_demand = wts->coloc_demand;
 
 	lockdep_assert_held(&pipeline_lock);
@@ -265,7 +269,7 @@ static inline void pipeline_task_sum_util_trace(struct task_struct *p, unsigned 
 
 static inline unsigned int pipeline_task_util_trace(struct task_struct *p)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	struct walt_task_struct *wts = (struct walt_task_struct *)android_task_vendor_data(p);
 	unsigned int util = wts->demand_scaled;
 
 	if (unlikely(global_debug_enabled & DEBUG_PIPELINE)) {
@@ -558,29 +562,99 @@ bool oplus_pipeline_task_skip_ux_change(struct oplus_task_struct *ots, int *ux_s
 
 enum THREAD_IMMUNED
 {
-	THREAD_IMMUNED_UNKNOWN,
-	THREAD_IMMUNED_YES,
-	THREAD_IMMUNED_NO,
+	THREAD_IMMUNED_UNKNOWN = 0,
+	THREAD_IMMUNED_YES = 1,
+	THREAD_IMMUNED_NO = 2,
 };
 
+static void clear_immuned_thread_flag(void)
+{
+	struct task_struct *leader = NULL;
+	struct task_struct *t;
+	struct oplus_task_struct *ots;
+
+	if (!prime_tgid)
+		return;
+
+	rcu_read_lock();
+	leader = find_task_by_vpid(prime_tgid);
+	if (leader) {
+		get_task_struct(leader);
+	}
+	rcu_read_unlock();
+
+	if (leader) {
+		rcu_read_lock();
+		for_each_thread(leader, t) {
+			ots = get_oplus_task_struct(t);
+			if (!IS_ERR_OR_NULL(ots))
+				WRITE_ONCE(ots->is_immuned_thread, THREAD_IMMUNED_UNKNOWN);
+		}
+		rcu_read_unlock();
+
+		put_task_struct(leader);
+	}
+}
+
+static inline bool __is_static_immuned_thread(struct task_struct *task)
+{
+	return strnstr(task->comm, "Loading.Preload", strlen("Loading.Preload")) ||
+		strnstr(task->comm, "GC Marker", strlen("GC Marker")) ||
+		strnstr(task->comm, "mali-compiler", strlen("mali-compiler")) ||
+		strnstr(task->comm, "RBX Worker", strlen("RBX Worker"));
+}
+
+static inline bool __is_dynamic_immuned_thread(struct task_struct *task)
+{
+	bool is_immuned_thread = false;
+
+	rcu_read_lock();
+	const char *name1 = rcu_dereference(dynamic_immuned_thread1_rcu);
+	if (name1 && strlen(name1) > 0) {
+		is_immuned_thread = strnstr(task->comm, name1, strlen(name1));
+	}
+
+	if (!is_immuned_thread) {
+		const char *name2 = rcu_dereference(dynamic_immuned_thread2_rcu);
+		if (name2 && strlen(name2) > 0) {
+			is_immuned_thread = strnstr(task->comm, name2, strlen(name2));
+		}
+	}
+	rcu_read_unlock();
+
+	return is_immuned_thread;
+}
+
+/**
+ * Although ots->is_immuned_thread in is_immuned_thread() and clear_immuned_thread_flag()
+ * has the risk of multi-threaded concurrency, but the impact is acceptable.
+ */
 static inline bool is_immuned_thread(struct task_struct *task, struct oplus_task_struct *ots)
 {
-	if (ots->is_immuned_thread == THREAD_IMMUNED_YES) {
-		return true;
-	} else if (ots->is_immuned_thread == THREAD_IMMUNED_NO) {
+	if (atomic_read(&updating_dynamic_immuned_thread)) {
 		return false;
-	} else { /* ots->THREAD_IMMUNED_UNKNOWN */
-		bool is_immuned_thread =
-				strnstr(task->comm, "Loading.Preload", strlen("Loading.Preload")) ||
-				strnstr(task->comm, "GC Marker", strlen("GC Marker")) ||
-				strnstr(task->comm, "mali-compiler", strlen("mali-compiler"));
+	}
+
+	int immuned_state = READ_ONCE(ots->is_immuned_thread);
+
+	if (immuned_state == THREAD_IMMUNED_YES) {
+		return true;
+	} else if (immuned_state == THREAD_IMMUNED_NO) {
+		return false;
+	} else { /* immuned_state == THREAD_IMMUNED_UNKNOWN */
+		bool is_immuned_thread = __is_static_immuned_thread(task);
 
 		if (!is_immuned_thread) {
-			is_immuned_thread = (strlen(immuned_thread_name) > 0) &&
-				strnstr(task->comm, immuned_thread_name, strlen(immuned_thread_name));
+			is_immuned_thread = __is_dynamic_immuned_thread(task);
 		}
 
-		ots->is_immuned_thread = is_immuned_thread;
+		if (atomic_read(&updating_dynamic_immuned_thread)) {
+			immuned_state = THREAD_IMMUNED_UNKNOWN;
+		} else {
+			immuned_state = is_immuned_thread ? THREAD_IMMUNED_YES : THREAD_IMMUNED_NO;
+		}
+
+		WRITE_ONCE(ots->is_immuned_thread, immuned_state);
 
 		return is_immuned_thread;
 	}
@@ -1050,15 +1124,12 @@ static ssize_t pipeline_args_proc_write(struct file *file,
 	int low_latency_task_util = -1;
 	int no_pipeline_task_util = -1;
 	int dislike = -1;
-	char i_thread_name[64] = {0};
-	int i_thread_name_len;
 
 	ret = simple_write_to_buffer(buffer, sizeof(buffer) - 1, ppos, buf, count);
 	if (ret <= 0)
 		return ret;
 
-	ret = sscanf(buffer, "%d %d %d %s", &low_latency_task_util, &no_pipeline_task_util,
-			&dislike, i_thread_name);
+	ret = sscanf(buffer, "%d %d %d", &low_latency_task_util, &no_pipeline_task_util, &dislike);
 	if (ret < 1)
 		return -EINVAL;
 
@@ -1079,12 +1150,6 @@ static ssize_t pipeline_args_proc_write(struct file *file,
 	else
 		dislike_no_pipeline_task_run_on_prime_cpu = true;
 
-	i_thread_name_len = strlen(i_thread_name);
-	if (i_thread_name_len > 0 && i_thread_name_len < 16)
-		strncpy(immuned_thread_name, i_thread_name, i_thread_name_len);
-	else
-		memset(immuned_thread_name, 0, sizeof(immuned_thread_name));
-
 	mutex_unlock(&p_mutex);
 
 	return count;
@@ -1097,11 +1162,10 @@ static ssize_t pipeline_args_proc_read(struct file *file,
 	int len;
 
 	mutex_lock(&p_mutex);
-	len = snprintf(buffer, sizeof(buffer), "%lu %lu %d, immuned_thread_name=%s, prime_cpu_num=%d\n",
+	len = snprintf(buffer, sizeof(buffer), "%lu %lu %d, prime_cpu_num=%d\n",
 		allowed_low_latency_task_util,
 		allowed_no_pipeline_task_util,
 		dislike_no_pipeline_task_run_on_prime_cpu ? 1 : 0,
-		immuned_thread_name,
 		prime_cpu_num);
 	mutex_unlock(&p_mutex);
 
@@ -1111,6 +1175,78 @@ static ssize_t pipeline_args_proc_read(struct file *file,
 static const struct proc_ops pipeline_args_proc_ops = {
 	.proc_write		= pipeline_args_proc_write,
 	.proc_read		= pipeline_args_proc_read,
+	.proc_lseek		= default_llseek,
+};
+
+static ssize_t pipeline_immuned_thread_proc_write(struct file *file,
+			const char __user *buf, size_t count, loff_t *ppos)
+{
+	int ret;
+	char buffer[64] = {0};
+	char name1[16] = {0};
+	char name2[16] = {0};
+	char *i_thread_name1;
+	char *i_thread_name2;
+	int i_thread_name1_len;
+	int i_thread_name2_len;
+
+	ret = simple_write_to_buffer(buffer, sizeof(buffer) - 1, ppos, buf, count);
+	if (ret <= 0)
+		return ret;
+
+	ret = sscanf(buffer, "%15[^;];%15[^;]", name1, name2);
+	if (ret < 0) {
+		return -EINVAL;
+	}
+
+	i_thread_name1 = strim(name1);
+	i_thread_name2 = strim(name2);
+
+	mutex_lock(&p_mutex);
+	atomic_set(&updating_dynamic_immuned_thread, 1);
+
+	rcu_assign_pointer(dynamic_immuned_thread1_rcu, NULL);
+	rcu_assign_pointer(dynamic_immuned_thread2_rcu, NULL);
+	synchronize_rcu();
+	memset(dynamic_immuned_thread1, 0, sizeof(dynamic_immuned_thread1));
+	memset(dynamic_immuned_thread2, 0, sizeof(dynamic_immuned_thread2));
+
+	i_thread_name1_len = strlen(i_thread_name1);
+	if (i_thread_name1_len > 0) {
+		strscpy(dynamic_immuned_thread1, i_thread_name1, sizeof(dynamic_immuned_thread1));
+		rcu_assign_pointer(dynamic_immuned_thread1_rcu, dynamic_immuned_thread1);
+	}
+	i_thread_name2_len = strlen(i_thread_name2);
+	if (i_thread_name2_len > 0) {
+		strscpy(dynamic_immuned_thread2, i_thread_name2, sizeof(dynamic_immuned_thread2));
+		rcu_assign_pointer(dynamic_immuned_thread2_rcu, dynamic_immuned_thread2);
+	}
+
+	clear_immuned_thread_flag();
+
+	atomic_set(&updating_dynamic_immuned_thread, 0);
+	mutex_unlock(&p_mutex);
+
+	return count;
+}
+
+static ssize_t pipeline_immuned_thread_proc_read(struct file *file,
+			char __user *buf, size_t count, loff_t *ppos)
+{
+	char buffer[64] = {0};
+	int len;
+
+	mutex_lock(&p_mutex);
+	len = snprintf(buffer, sizeof(buffer), "%s;%s\n",
+		dynamic_immuned_thread1, dynamic_immuned_thread2);
+	mutex_unlock(&p_mutex);
+
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static const struct proc_ops pipeline_immuned_thread_proc_ops = {
+	.proc_write		= pipeline_immuned_thread_proc_write,
+	.proc_read		= pipeline_immuned_thread_proc_read,
 	.proc_lseek		= default_llseek,
 };
 
@@ -1166,10 +1302,11 @@ static const struct proc_ops pipeline_rt_cpumask_proc_ops = {
 
 void oplus_pipeline_init(struct proc_dir_entry *pde)
 {
-	proc_create("pipeline_pids_cpus", (S_IRUGO|S_IWUSR|S_IWGRP), pde, &pipeline_pids_proc_ops);
+	proc_create("pipeline_pids_cpus", (S_IRUGO | S_IWUSR | S_IWGRP | S_IRGRP), pde, &pipeline_pids_proc_ops);
 #if IS_ENABLED(CONFIG_SCHED_WALT)
-	proc_create("pipeline_prime_rearrange", (S_IRUGO|S_IWUSR|S_IWGRP), pde, &pipeline_prime_proc_ops);
+	proc_create("pipeline_prime_rearrange", (S_IRUGO | S_IWUSR | S_IWGRP), pde, &pipeline_prime_proc_ops);
 #endif
-	proc_create("pipeline_args", (S_IRUGO|S_IWUSR|S_IWGRP), pde, &pipeline_args_proc_ops);
-	proc_create("pipeline_rt_cpumask", (S_IRUGO|S_IWUSR|S_IWGRP), pde, &pipeline_rt_cpumask_proc_ops);
+	proc_create("pipeline_args", (S_IRUGO | S_IWUSR | S_IWGRP | S_IRGRP), pde, &pipeline_args_proc_ops);
+	proc_create("pipeline_immuned_thread", (S_IRUGO | S_IWUSR | S_IWGRP | S_IRGRP), pde, &pipeline_immuned_thread_proc_ops);
+	proc_create("pipeline_rt_cpumask", (S_IRUGO | S_IWUSR | S_IWGRP | S_IRGRP), pde, &pipeline_rt_cpumask_proc_ops);
 }

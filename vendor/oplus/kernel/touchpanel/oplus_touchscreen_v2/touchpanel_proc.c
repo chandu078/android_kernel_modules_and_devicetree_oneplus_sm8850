@@ -1461,10 +1461,10 @@ static ssize_t proc_set_idle_freq_mode_write(struct file *file,
 		TS_TP_INFO("%s: invalid value %d, should be 0 or 1\n", __func__, value);
 		return -EINVAL;
 	}
-
 	TS_TP_INFO("%s: value is %x.\n", __func__, value);
 
 	mutex_lock(&ts->mutex);
+	ts->idle_freq_enable = value;
 	if (ts->game_switch_support) {
 		if (ts->ts_ops->set_idle_freq_mode) {
 			ts->ts_ops->set_idle_freq_mode(value);
@@ -1487,6 +1487,7 @@ static ssize_t proc_set_idle_freq_mode_read(struct file *file, char __user *buff
 	if (!ts) {
 		return 0;
 	}
+	snprintf(page, PAGESIZE - 1, "value:%d\n", ts->idle_freq_enable);
 
 	ret = simple_read_from_buffer(buffer, count, ppos, page, strlen(page));
 	return ret;
@@ -1584,6 +1585,7 @@ static ssize_t proc_hardware_control_write(struct file *file,
 	int value = 0;
 	char buf[4] = {0};
 	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
+	int ret = 0;
 
 	if (!ts) {
 		return count;
@@ -1597,22 +1599,34 @@ static ssize_t proc_hardware_control_write(struct file *file,
 	}
 
 	if (value == ENABLE_HW_RES_AVDD) {
-		tp_powercontrol_avdd(&ts->hw_res, true);
+		ret = tp_powercontrol_avdd(&ts->hw_res, true);
+		if (ret) {
+			TP_INFO(ts->tp_index, "%s: tp_powercontrol_avdd error\n", __func__);
+		}
 		return count;
 	}
 
 	if (value == DISABLE_HW_RES_AVDD) {
-		tp_powercontrol_avdd(&ts->hw_res, false);
+		ret = tp_powercontrol_avdd(&ts->hw_res, false);
+		if (ret) {
+			TP_INFO(ts->tp_index, "%s: tp_powercontrol_avdd error\n", __func__);
+		}
 		return count;
 	}
 
 	if (value == ENABLE_HW_RES_VDDI) {
-		tp_powercontrol_vddi(&ts->hw_res, true);
+		ret = tp_powercontrol_vddi(&ts->hw_res, true);
+		if (ret) {
+			TP_INFO(ts->tp_index, "%s: tp_powercontrol_vddi error\n", __func__);
+		}
 		return count;
 	}
 
 	if (value == DISABLE_HW_RES_VDDI) {
-		tp_powercontrol_vddi(&ts->hw_res, false);
+		ret = tp_powercontrol_vddi(&ts->hw_res, false);
+		if (ret) {
+			TP_INFO(ts->tp_index, "%s: tp_powercontrol_vddi error\n", __func__);
+		}
 		return count;
 	}
 
@@ -4986,6 +5000,63 @@ static int abs_doze_open(struct inode *inode, struct file *file)
 
 DECLARE_PROC_OPS(tp_abs_doze_proc_fops, abs_doze_open, seq_read, NULL, single_release);
 
+/*proc/touchpanel/debug_info/ic_reset*/
+static ssize_t tp_inject_wdt_reset_write_func(struct file *file,
+				    const char __user *buffer, size_t count, loff_t *ppos)
+{
+	int value = 0;
+	char buf[5] = {0};
+	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
+
+	if (!ts) {
+		TPD_INFO("%s: ts is NULL\n", __func__);
+		return count;
+	}
+
+	if (!ts->ts_ops || !ts->ts_ops->inject_wdt_reset || !ts->chip_data) {
+		TS_TP_INFO("%s: ts->ts_ops or ts->ts_ops->inject_wdt_reset or ts->chip_data is NULL\n", __func__);
+		return count;
+	}
+
+	if (ts->is_suspended) {
+		TS_TP_INFO("%s: is_suspended, exit\n", __func__);
+		return count;
+	}
+
+	tp_copy_from_user(buf, sizeof(buf), buffer, count, 4);
+
+	if (kstrtoint(buf, 10, &value)) {
+		TP_INFO(ts->tp_index, "%s: kstrtoint error\n", __func__);
+		return count;
+	}
+
+	TP_INFO(ts->tp_index, "%s: inject watchdog reset value=%d\n", __func__, value);
+
+	if (value) {
+		mutex_lock(&ts->mutex);
+		ts->ts_ops->inject_wdt_reset(ts->chip_data, value);
+		mutex_unlock(&ts->mutex);
+	}
+
+	return count;
+}
+
+static int tp_inject_wdt_reset_read_func(struct seq_file *s, void *v)
+{
+	struct touchpanel_data *ts = s->private;
+
+	if (!ts) {
+		return 0;
+	}
+	return 0;
+}
+
+static int inject_wdt_reset_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, tp_inject_wdt_reset_read_func, PDE_DATA(inode));
+}
+
+DECLARE_PROC_OPS(tp_inject_wdt_reset_proc_fops, inject_wdt_reset_open, seq_read, tp_inject_wdt_reset_write_func, single_release);
 
 /*proc/touchpanel/debug_info/snr*/
 static ssize_t proc_snr_write(struct file *file, const char __user *buf, size_t count, loff_t *lo)
@@ -5382,6 +5453,83 @@ static ssize_t proc_glove_mode_read(struct file *file, char __user *buffer,
 DECLARE_PROC_OPS(proc_glove_mode, simple_open,
 		  proc_glove_mode_read, proc_glove_mode_write, NULL);
 
+/*proc/touchpanel/rainstorm_mode_enable*/
+static ssize_t proc_rainstorm_mode_write(struct file *file, const char __user *buffer,
+				  size_t count, loff_t *ppos)
+{
+	int ret = 0;
+	int value = 0;
+	size_t copy_len = 0;
+	char buf[4] = {0};
+	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
+
+	if (!ts || !ts->ts_ops) {
+		TPD_INFO("%s: ts is NULL\n", __func__);
+		return count;
+	}
+
+	if (!ts->ts_ops->mode_switch) {
+		TS_TP_INFO("not support ts_ops->mode_switch callback\n");
+		return count;
+	}
+
+	copy_len = min(count, (size_t)3);
+	if (tp_copy_from_user(buf, sizeof(buf), buffer, copy_len, copy_len)) {
+        TS_TP_INFO("%s: read proc input error.\n", __func__);
+		return count;
+	}
+	buf[copy_len] = '\0';
+
+	if (kstrtoint(buf, 10, &value)) {
+		TP_INFO(ts->tp_index, "%s: kstrtoint error\n", __func__);
+		return count;
+	}
+
+	mutex_lock(&ts->mutex);
+
+	ts->rainstorm_enable = !!value;
+	TP_INFO(ts->tp_index, "%s: rainstorm_enable value=%d\n", __func__, value);
+
+	if (ts->is_suspended) {
+		TS_TP_INFO("%s: is_suspended, exit\n", __func__);
+		mutex_unlock(&ts->mutex);
+		return count;
+	}
+
+	ret = ts->ts_ops->mode_switch(ts->chip_data, MODE_RAINSTORM, ts->rainstorm_enable);
+	if (ret < 0) {
+		TS_TP_INFO("%s, Touchpanel operate rainstorm mode switch failed\n", __func__);
+	}
+	mutex_unlock(&ts->mutex);
+
+	return count;
+}
+
+static ssize_t proc_rainstorm_mode_read(struct file *file, char __user *buffer,
+				 size_t count, loff_t *ppos)
+{
+	int ret = 0;
+	char page[PAGESIZE] = {0};
+	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
+
+	if (!ts) {
+		snprintf(page, PAGESIZE - 1, "%d\n", -1); /*no support*/
+		TPD_INFO("rainstorm mode enable is no support \n");
+		ret = simple_read_from_buffer(buffer, count, ppos, page, strlen(page));
+		return ret;
+	} else {
+		/*support*/
+		mutex_lock(&ts->mutex);
+		snprintf(page, PAGESIZE - 1, "%d\n", ts->rainstorm_enable);
+		ret = simple_read_from_buffer(buffer, count, ppos, page, strlen(page));
+		mutex_unlock(&ts->mutex);
+		return ret;
+	}
+}
+
+DECLARE_PROC_OPS(proc_rainstorm_mode, simple_open,
+		  proc_rainstorm_mode_read, proc_rainstorm_mode_write, NULL);
+
 /*proc/touchpanel/leather_cover_enable*/
 static ssize_t proc_leather_cover_enable_write(struct file *file, const char __user *buffer,
 				  size_t count, loff_t *ppos)
@@ -5679,6 +5827,47 @@ static int init_debug_info_proc(struct touchpanel_data *ts)
 			"snr", 0666, NULL, &proc_snr_ops, ts, false,
 			ts->snr_read_support
 		},/* show abs_doze interface*/
+		{"ic_reset", 0666, NULL, &tp_inject_wdt_reset_proc_fops, ts, false, true},/* inject watchdog reset*/
+	};
+
+	TP_INFO(ts->tp_index, "%s entry\n", __func__);
+
+	/*proc/touchpanel/debug_info*/
+	prEntry_debug_info = proc_mkdir("debug_info", ts->prEntry_tp);
+
+	if (prEntry_debug_info == NULL) {
+		TP_INFO(ts->tp_index, "%s: Couldn't create debug_info proc entry\n", __func__);
+		return -ENOMEM;
+	}
+
+	ts->prEntry_debug_tp = prEntry_debug_info;
+
+	for (i = 0; i < ARRAY_SIZE(proc_debug_node); i++) {
+		if (proc_debug_node[i].is_support) {
+			proc_debug_node[i].node = proc_create_data(proc_debug_node[i].name,
+						  proc_debug_node[i].mode,
+						  prEntry_debug_info, proc_debug_node[i].fops, proc_debug_node[i].data);
+
+			if (proc_debug_node[i].node == NULL) {
+				proc_debug_node[i].is_created = false;
+				TP_INFO(ts->tp_index, "%s: Couldn't create proc/debug_info/%s\n", __func__,
+					proc_debug_node[i].name);
+				ret = -ENODEV;
+
+			} else {
+				proc_debug_node[i].is_created = true;
+			}
+		}
+	}
+
+	return ret;
+}
+static int init_debug_info_proc_part2(struct touchpanel_data *ts, struct proc_dir_entry *prEntry_debug_tp)
+{
+	int ret = 0;
+	int i = 0;
+
+	tp_proc_node proc_debug_node_part2[] = {
 #ifndef CONFIG_REMOVE_OPLUS_FUNCTION
 		{
 			"health_monitor", 0666, NULL, &tp_health_monitor_proc_fops, ts, false,
@@ -5703,32 +5892,25 @@ static int init_debug_info_proc(struct touchpanel_data *ts)
 		{"report_rate_test", 0666, NULL, &proc_report_rate_test_fops, ts, false, true},
 	};
 
-	TP_INFO(ts->tp_index, "%s entry\n", __func__);
-
-	/*proc/touchpanel/debug_info*/
-	prEntry_debug_info = proc_mkdir("debug_info", ts->prEntry_tp);
-
-	if (prEntry_debug_info == NULL) {
-		ret = -ENOMEM;
+	if (prEntry_debug_tp == NULL) {
 		TP_INFO(ts->tp_index, "%s: Couldn't create debug_info proc entry\n", __func__);
+		return -ENOMEM;
 	}
 
-	ts->prEntry_debug_tp = prEntry_debug_info;
+	for (i = 0; i < ARRAY_SIZE(proc_debug_node_part2); i++) {
+		if (proc_debug_node_part2[i].is_support) {
+			proc_debug_node_part2[i].node = proc_create_data(proc_debug_node_part2[i].name,
+						  proc_debug_node_part2[i].mode,
+						  prEntry_debug_tp, proc_debug_node_part2[i].fops, proc_debug_node_part2[i].data);
 
-	for (i = 0; i < ARRAY_SIZE(proc_debug_node); i++) {
-		if (proc_debug_node[i].is_support) {
-			proc_debug_node[i].node = proc_create_data(proc_debug_node[i].name,
-						  proc_debug_node[i].mode,
-						  prEntry_debug_info, proc_debug_node[i].fops, proc_debug_node[i].data);
-
-			if (proc_debug_node[i].node == NULL) {
-				proc_debug_node[i].is_created = false;
+			if (proc_debug_node_part2[i].node == NULL) {
+				proc_debug_node_part2[i].is_created = false;
 				TP_INFO(ts->tp_index, "%s: Couldn't create proc/debug_info/%s\n", __func__,
-					proc_debug_node[i].name);
+					proc_debug_node_part2[i].name);
 				ret = -ENODEV;
 
 			} else {
-				proc_debug_node[i].is_created = true;
+				proc_debug_node_part2[i].is_created = true;
 			}
 		}
 	}
@@ -5863,6 +6045,9 @@ int init_touchpanel_proc_part3(struct touchpanel_data *ts, struct proc_dir_entry
 			ts->glove_mode_v2_support
 		},
 		{"set_idle_freq_mode", 0666, NULL, &proc_set_idle_freq_mode_ops, ts, false, ts->idle_freq_support},
+		{
+			"rainstorm_mode", 0666, NULL, &proc_rainstorm_mode, ts, false, ts->rainstorm_mode_v2_support
+		},
 		{
 			"pocket_prevent_mode", 0666, NULL, &proc_pocket_prevent_mode, ts, false, ts->glove_mode_v2_support
 		},
@@ -6044,6 +6229,7 @@ int init_touchpanel_proc(struct touchpanel_data *ts)
 
 	/*create debug_info node*/
 	init_debug_info_proc(ts);
+	init_debug_info_proc_part2(ts, ts->prEntry_debug_tp);
 
 	/*create kernel grip proc file*/
 	if (ts->kernel_grip_support) {

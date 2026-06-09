@@ -78,7 +78,8 @@ struct oplus_display_ops {
 	/* esd */
 	int (*panel_parse_esd_reg_read_configs_post)(struct dsi_panel *panel);
 	void (*panel_parse_esd_config_post)(struct dsi_panel *panel);
-	int (*display_read_status)(struct dsi_panel *panel);
+	int (*display_read_status_pre)(struct dsi_panel *panel);
+	int (*display_read_status_post)(struct dsi_panel *panel);
 	bool (*display_check_status_pre)(struct dsi_panel *panel);
 	int (*display_check_status_post)(struct dsi_display *display);
 	int (*display_validate_status)(struct dsi_display *display);

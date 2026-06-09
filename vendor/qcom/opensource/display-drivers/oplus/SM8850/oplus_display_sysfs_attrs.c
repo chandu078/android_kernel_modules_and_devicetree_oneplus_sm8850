@@ -2658,6 +2658,7 @@ static OPLUS_ATTR(trackpoint_test, S_IRUGO | S_IWUSR, oplus_get_trackpoint_test_
 #endif /* OPLUS_TRACKPOINT_REPORT */
 static OPLUS_ATTR(panel_apl_value, S_IRUGO | S_IWUSR, oplus_display_get_panel_apl_value, NULL);
 static OPLUS_ATTR(dynamic_float_te, S_IRUGO | S_IWUSR, oplus_get_dynamic_float_te_debug_attr, oplus_set_dynamic_float_te_debug_attr);
+static OPLUS_ATTR(low_pwm_aod, S_IRUGO | S_IWUSR, NULL, oplus_ofp_set_low_pwm_aod_mode_attr);
 
 /*
  * Create a group of attributes so that we can create and destroy them all
@@ -2727,6 +2728,7 @@ static struct attribute *oplus_display_attrs[] = {
 #endif /* OPLUS_TRACKPOINT_REPORT */
 	&oplus_attr_panel_apl_value.attr,
 	&oplus_attr_dynamic_float_te.attr,
+	&oplus_attr_low_pwm_aod.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 

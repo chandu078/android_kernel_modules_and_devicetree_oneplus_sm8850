@@ -28,6 +28,15 @@ enum oplus_mm_symbol {
 	OMS_END,
 };
 
+#define OMTE_COMMON_STRING "8940000:"
+enum oplus_mm_trace_event {
+	OMTE_COMMON = 8940000,
+	OMTE_KWAPD_WAKEUP_HIGH_ORDER,
+	OMTE_KWAPD_RUNNING,
+	OMTE_DMA_BUF_ALLOCATION,
+	OMTE_DMA_BUF_ALLOCATION_ORDERS,
+};
+
 /* common ioctl for userspace */
 #define __COMMONIO 0xFA
 #define CMD_OSVELTE_GET_VERSION		_IO(__COMMONIO, 1)

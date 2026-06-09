@@ -10,6 +10,8 @@
 #ifndef _OPLUS_SC83107_H_
 #define _OPLUS_SC83107_H_
 
+#include <oplus_chg_mutual.h>
+
 /* reg 0x09*/
 #define SC83107_POR_FLAG_BIT	BIT(1)
 #define SC83107_VBAT_FALLING_FLAG_BIT	BIT(2)
@@ -173,16 +175,49 @@ struct sc83107_chip {
 	bool force_bp_retry_enabled;
 
 	/* Track upload mechanism */
-	struct work_struct track_upload_work;
+	struct delayed_work track_upload_work;
 	bool track_upload_pending;
 
 	/* IRQ handler work - for processing interrupt in process context */
-	struct work_struct irq_handler_work;
+	struct delayed_work irq_handler_work;
 	bool irq_handler_work_pending;
+
+	/* GPIO state tracking */
+	bool gpio_pulled_down;
+
+	/* Suspend state tracking */
+	atomic_t suspended;
 
 	/* Wired topic subscription */
 	struct oplus_mms *wired_topic;
 	struct mms_subscribe *wired_subs;
+
+	/* Comm topic subscription for boot completed */
+	struct oplus_mms *comm_topic;
+	struct mms_subscribe *comm_subs;
+	int last_ui_soc; /* Track last UI SOC to detect 1% entry */
+
+	/* Mutual notifier for reading error flag from partition */
+	struct oplus_chg_mutual_notifier dischg_boost_err_flag_mutual;
+	char dischg_boost_err_flag_data[128];
+	struct delayed_work get_dischg_boost_err_flag_work;
+
+	/* Work queue for uploading dischg boost err flag from mutual notifier (atomic context) */
+	struct work_struct dischg_boost_err_flag_upload_work;
+	unsigned int dischg_boost_err_flag; /* Error flag to be uploaded in process context */
+	u8 dischg_boost_err_reg08_val; /* Register 0x08 value to be uploaded */
+	u8 dischg_boost_err_reg09_val; /* Register 0x09 value to be uploaded */
+	u8 dischg_boost_err_reg0a_val; /* Register 0x0A value to be uploaded */
+
+	/* Wakelock for critical I2C operations */
+	struct wakeup_source *i2c_wake_lock;
+
+	/* Suspend/Resume CV configuration */
+	int suspend_cv_mv;
+	int resume_cv_mv;
+
+	/* I2C bus reset feature control */
+	bool i2c_bus_reset_enable;
 };
 
 enum sc83107_flag_type {

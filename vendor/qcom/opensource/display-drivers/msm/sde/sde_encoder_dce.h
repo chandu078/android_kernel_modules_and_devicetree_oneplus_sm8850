@@ -30,10 +30,4 @@ void sde_encoder_dce_disable(struct sde_encoder_virt *sde_enc);
 int sde_encoder_dce_setup(struct sde_encoder_virt *sde_enc,
 		struct sde_encoder_kickoff_params *params);
 
-/**
- * sde_encoder_dce_flush :function to flush the compression configuration
- * @sde_enc: pointer to virtual encoder structure
- */
-void sde_encoder_dce_flush(struct sde_encoder_virt *sde_enc);
-
 #endif /* __SDE_ENCODER_DCE_H__ */

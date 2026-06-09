@@ -216,9 +216,11 @@ def define_oplus_chg_v2_module():
         "v2/strategy/oplus_strategy_pps_ufcs_curve.c",
         "v2/strategy/oplus_strategy_low_curr_full.c",
         "v2/strategy/oplus_strategy_pps_ufcs_curve_v2.c",
+        "v2/strategy/oplus_strategy_cycle_current_derating.c",
         "v2/strategy/oplus_strategy_ddrc.c",
         "v2/strategy/oplus_strategy_ddrc_v2.c",
         "v2/strategy/oplus_strategy_battery_smooth.c",
+        "v2/strategy/oplus_strategy_volt_fastchg_allow.c",
         "v2/strategy/oplus_strategy_pcc.c",
         "v2/strategy/oplus_strategy_pcc_v2.c",
         "v2/monitor/oplus_monitor_core.c",
@@ -257,6 +259,11 @@ def define_oplus_chg_v2_module():
                 "v2/gauge_ic/oplus_hal_sn28z729.c"
             ],
         },
+        "CONFIG_OPLUS_GAUGE_BQ28Z610_RA": {
+            True: [
+                "v2/gauge_ic/oplus_hal_bq28z610.c"
+            ],
+        },
         "CONFIG_OPLUS_CHG_IC_DEBUG": {
             True: [
                 "v2/hal/debug/oplus_chg_ic_debug.c"
@@ -286,11 +293,6 @@ def define_oplus_chg_v2_module():
         "CONFIG_OPLUS_SGM41512_CHARGER": {
             True: [
                 "v2/charger_ic/oplus_hal_sgm41512.c"
-            ],
-        },
-        "CONFIG_OPLUS_SY6974B_CHARGER": {
-            True: [
-                "v2/charger_ic/oplus_hal_sy6974b.c"
             ],
         },
         "CONFIG_OPLUS_PD_MANAGER_CHARGER": {

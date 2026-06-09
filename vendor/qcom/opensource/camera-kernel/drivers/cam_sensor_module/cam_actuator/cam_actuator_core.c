@@ -1446,6 +1446,12 @@ release_mutex:
 	mutex_unlock(&(a_ctrl->read_buf_lock));
 	mutex_unlock(&(a_ctrl->actuator_mutex));
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	char fb_payload[PAYLOAD_LENGTH] = {0};
+	if (rc < 0) {
+		KEVENT_FB_ACTUATOR_CTL_FAILED(fb_payload, "actuator control error", rc);
+	}
+#endif
 	return rc;
 }
 

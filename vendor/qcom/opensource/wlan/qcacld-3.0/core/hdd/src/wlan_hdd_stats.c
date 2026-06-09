@@ -207,7 +207,11 @@ static int rssi_mcs_tbl[][MAX_RSSI_MCS_INDEX] = {
 	/* 40 */
 	{-79, -76, -74, -71, -67, -63, -62, -61, -56, -54, -49, -45, -43, -39},
 	/* 80 */
-	{-76, -73, -71, -68, -64, -60, -59, -58, -53, -51, -46, -42, -46, -36}
+	{-76, -73, -71, -68, -64, -60, -59, -58, -53, -51, -46, -42, -46, -36},
+	/* 160 */
+	{-73, -70, -68, -65, -61, -57, -56, -55, -50, -48, -43, -39, -43, -33},
+	/* 320 */
+	{-70, -67, -65, -62, -58, -54, -53, -52, -47, -45, -40, -36, -40, -30}
 };
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
@@ -8690,7 +8694,6 @@ wlan_hdd_get_sta_tx_rate_stats(struct wlan_hdd_link_info *link_info)
 	struct stats_event *stats;
 	struct hdd_fw_txrx_stats txrx_stats = {0};
 	struct hdd_stats *hdd_stats = &link_info->hdd_stats;
-	int errno = 0;
 	uint8_t *peer_addr;
 
 	if (hdd_stats->class_a_stat.is_tx_rate_version_checked &&
@@ -8704,10 +8707,11 @@ wlan_hdd_get_sta_tx_rate_stats(struct wlan_hdd_link_info *link_info)
 
 	peer_addr = link_info->session.station.conn_info.bssid.bytes;
 	stats = wlan_cfg80211_mc_cp_stats_get_peer_stats_ext(link_info->vdev,
-							     peer_addr,
-							     &errno);
-	if (errno)
+							     peer_addr);
+	if (!stats) {
+		hdd_err_rl("Failed to get peer_stats");
 		return;
+	}
 
 	wlan_hdd_fill_rate_info(&txrx_stats, stats->peer_stats_info_ext);
 	hdd_stats->class_a_stat.tx_rate_version = txrx_stats.tx_rate.version;
@@ -12727,21 +12731,38 @@ static void hdd_print_second_64_bits_cstats_fw_type(char *buffer,
 {
 	const char *start_marker = "CS_FSM";
 	const char *end_marker = "CS_FEM";
-	uint32_t i, j, start, end, payload_len;
+	uint32_t i, j, start, payload_len;
+	bool end_found = false;
 	uint64_t second_64 = 0;
 
-	/* skips the 2-byte ANI HDR at the beginning */
-	for (i = ANI_HDR_SIZE; i < len - 1; i++) {
+	if (!buffer) {
+		hdd_debug("Buffer is NULL");
+		return;
+	}
+
+	if (len < ANI_HDR_SIZE + MARKER_LEN) {
+		hdd_debug("Buffer too short for markers");
+		return;
+	}
+
+	/* skip the 2-byte ANI HDR at the beginning */
+	i = ANI_HDR_SIZE;
+
+	while (i + MARKER_LEN <= len) {
 		/* Look for start marker */
 		if (qdf_mem_cmp(&buffer[i], start_marker, MARKER_LEN) == 0) {
 			start = i + MARKER_LEN;
+			end_found = false;
 			/* look for end marker */
-			for (j = start; j < len - 1; j++) {
+			j = start;
+			while (j + MARKER_LEN <= len) {
 				if (qdf_mem_cmp(&buffer[j], end_marker,
 						MARKER_LEN) == 0) {
-					end = j;
-					payload_len = end - start;
-					if (payload_len >= 16) {
+					payload_len = j - start;
+
+					/* Verify bounds before extraction */
+					if (payload_len >= 16 &&
+					    (start + 16) <= len) {
 						/*
 						 * extract second 64 bits
 						 * (bytes 8 to 15) of payload
@@ -12756,12 +12777,25 @@ static void hdd_print_second_64_bits_cstats_fw_type(char *buffer,
 						hdd_debug("Payload too short");
 					}
 					/* move past this payload */
-					i = j + MARKER_LEN - 1;
+					i = j + MARKER_LEN;
+					end_found = true;
 					break;
 				}
+
+				j++;
 			}
+
+			if (!end_found) {
+				hdd_debug("End marker not found after start marker");
+				i++;
+			}
+
+			continue;
 		}
+
+		i++;
 	}
+
 }
 
 int hdd_cstats_send_data_to_userspace(char *buff, unsigned int len,

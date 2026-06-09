@@ -81,6 +81,7 @@
 #ifdef WLAN_FEATURE_11BE_MLO
 #include <lim_mlo.h>
 #endif
+#include "wlan_mlo_mgr_sta.h"
 #include "wlan_cmn_ieee80211.h"
 #include <wlan_cm_api.h>
 #include <wlan_vdev_mgr_utils_api.h>
@@ -288,6 +289,8 @@ char *lim_msg_str(uint32_t msgType)
 		return "SIR_LIM_AUTH_RSP_TIMEOUT";
 	case SIR_LIM_ASSOC_FAIL_TIMEOUT:
 		return "SIR_LIM_ASSOC_FAIL_TIMEOUT";
+	case SIR_LIM_DEAUTH_ACK_TIMEOUT:
+		return "SIR_LIM_DEAUTH_ACK_TIMEOUT";
 	case SIR_LIM_REASSOC_FAIL_TIMEOUT:
 		return "SIR_LIM_REASSOC_FAIL_TIMEOUT";
 	case SIR_LIM_HEART_BEAT_TIMEOUT:
@@ -3910,6 +3913,14 @@ void lim_update_sta_run_time_ht_switch_chnl_params(struct mac_context *mac,
 		return;
 	}
 
+	/* If ACTION_OUI_LIMIT_BW matched for this 2.4GHz IoT AP, prevent HT40 switching */
+	if (pe_session->action_oui_limit_bw_2g &&
+	    WLAN_REG_IS_24GHZ_CH_FREQ(pe_session->curr_op_freq)) {
+		pe_debug("Preventing HT40 switch for IoT AP on vdev %d",
+			 pe_session->vdev_id);
+		return;
+	}
+
 	if (pe_session->htSecondaryChannelOffset !=
 	    (uint8_t) pHTInfo->secondaryChannelOffset
 	    || pe_session->htRecommendedTxWidthSet !=
@@ -5129,28 +5140,6 @@ bool lim_check_vht_op_mode_change(struct mac_context *mac,
 	struct csa_offload_params *csa_param;
 	enum QDF_OPMODE mode = wlan_vdev_mlme_get_opmode(pe_session->vdev);
 
-	if (mode == QDF_STA_MODE || mode == QDF_P2P_CLIENT_MODE) {
-		status = lim_get_update_bw_allow(pe_session, chanWidth,
-						 &update_allow);
-		if (QDF_IS_STATUS_ERROR(status))
-			return false;
-	} else {
-		update_allow = true;
-	}
-
-	if (update_allow) {
-		tUpdateVHTOpMode tempParam;
-
-		tempParam.chwidth = chanWidth;
-		tempParam.smesessionId = pe_session->smeSessionId;
-		qdf_mem_copy(tempParam.peer_mac, peerMac, sizeof(tSirMacAddr));
-
-		lim_send_mode_update(mac, &tempParam, pe_session);
-		lim_update_tdls_2g_bw(pe_session);
-
-		return true;
-	}
-
 	if (!wlan_cm_is_vdev_connected(pe_session->vdev))
 		return false;
 
@@ -5161,6 +5150,29 @@ bool lim_check_vht_op_mode_change(struct mac_context *mac,
 						pe_session->curr_op_freq,
 						0, &ch_params,
 						REG_CURRENT_PWR_MODE);
+
+	if (mode == QDF_STA_MODE || mode == QDF_P2P_CLIENT_MODE) {
+		status = lim_get_update_bw_allow(pe_session, ch_params.ch_width,
+						 &update_allow);
+		if (QDF_IS_STATUS_ERROR(status))
+			return false;
+	} else {
+		update_allow = true;
+	}
+
+	if (update_allow) {
+		tUpdateVHTOpMode tempParam;
+
+		tempParam.chwidth = ch_params.ch_width;
+		tempParam.smesessionId = pe_session->smeSessionId;
+		qdf_mem_copy(tempParam.peer_mac, peerMac, sizeof(tSirMacAddr));
+
+		lim_send_mode_update(mac, &tempParam, pe_session);
+		lim_update_tdls_2g_bw(pe_session);
+
+		return true;
+	}
+
 	csa_param = qdf_mem_malloc(sizeof(*csa_param));
 	if (!csa_param) {
 		pe_err("csa_param allocation fails");
@@ -8264,7 +8276,8 @@ QDF_STATUS lim_send_he_caps_ie(struct mac_context *mac_ctx,
 
 	if ((device_mode == QDF_STA_MODE) ||
 	    (device_mode == QDF_P2P_CLIENT_MODE &&
-	     wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id))) {
+	     (wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id) ||
+	      wlan_vdev_p2p_is_pcc_mode(mac_ctx->psoc, vdev_id)))) {
 		ucfg_twt_cfg_get_requestor(mac_ctx->psoc, &value);
 		if (!value) {
 			he_cap->twt_request = false;
@@ -8273,7 +8286,8 @@ QDF_STATUS lim_send_he_caps_ie(struct mac_context *mac_ctx,
 		he_cap->twt_responder = false;
 	} else if ((device_mode == QDF_SAP_MODE) ||
 		    (device_mode == QDF_P2P_GO_MODE &&
-		     wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id))) {
+		     (wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id) ||
+		      wlan_vdev_p2p_is_pcc_mode(mac_ctx->psoc, vdev_id)))) {
 		wlan_twt_get_responder_cfg(mac_ctx->psoc, &twt_resp_cfg);
 		if (!wlan_twt_check_responder_bit(mac_ctx->psoc, vdev_id,
 						  device_mode, twt_resp_cfg)) {
@@ -11464,6 +11478,16 @@ QDF_STATUS lim_set_ch_phy_mode(struct wlan_objmgr_vdev *vdev, uint8_t dot11mode)
 	mlme_obj->mgmt.generic.phy_mode = wmi_host_to_fw_phymode(chan_mode);
 	des_chan->ch_phymode = chan_mode;
 
+	if (wlan_vdev_is_restart_progress(vdev) == QDF_STATUS_SUCCESS) {
+		if (wlan_mlme_update_cur_ch_width(vdev,
+						  des_chan->ch_width, true) !=
+						  QDF_STATUS_SUCCESS) {
+			pe_err("Failed to update chwidth %d",
+			       des_chan->ch_width);
+			return QDF_STATUS_E_FAILURE;
+		}
+	}
+
 	return QDF_STATUS_SUCCESS;
 }
 
@@ -11491,6 +11515,39 @@ void lim_overwrite_sta_puncture(struct pe_session *session,
 }
 #else
 #endif
+
+static inline QDF_STATUS
+lim_fill_session_nss_params_on_create(struct mac_context *mac_ctx,
+				      struct pe_session *session)
+{
+	struct vdev_type_nss *vdev_type_nss;
+	enum QDF_OPMODE opmode;
+	enum bss_type bss_type = eSIR_DONOT_USE_BSS_TYPE;
+
+	opmode = wlan_get_opmode_from_vdev_id(mac_ctx->pdev, session->vdev_id);
+	if (opmode == QDF_PASSTHRU_MODE)
+		bss_type = eSIR_PASSTHRU_MODE;
+
+	pe_debug("opmode %d bss_type %d", opmode, bss_type);
+	if (!wlan_reg_is_24ghz_ch_freq(session->curr_op_freq)) {
+		vdev_type_nss = &mac_ctx->vdev_type_nss_5g;
+	} else {
+		vdev_type_nss = &mac_ctx->vdev_type_nss_2g;
+	}
+
+	switch (bss_type) {
+	case eSIR_PASSTHRU_MODE:
+		/* Use STA mode NSS config for PASSTHRU */
+		session->vdev_nss = vdev_type_nss->sta;
+		break;
+	default:
+		/* not used anywhere...used in scan function */
+		break;
+	}
+
+	session->nss = session->vdev_nss;
+	return QDF_STATUS_SUCCESS;
+}
 
 QDF_STATUS lim_set_session_channel_params(struct mac_context *mac,
 					  struct pe_session *session)
@@ -11575,6 +11632,9 @@ QDF_STATUS lim_set_session_channel_params(struct mac_context *mac,
 	session->ch_width = ch_params.ch_width;
 	session->ch_center_freq_seg0 = ch_params.center_freq_seg0;
 	session->ch_center_freq_seg1 = ch_params.center_freq_seg1;
+
+	if (LIM_IS_PASSTHRU_ROLE(session))
+		lim_fill_session_nss_params_on_create(mac, session);
 
 	mlme_obj = wlan_vdev_mlme_get_cmpt_obj(session->vdev);
 	if (!mlme_obj) {
@@ -11810,8 +11870,6 @@ bool lim_update_channel_width(struct mac_context *mac_ctx,
 	else
 		sta_ptr->htSupportedChannelWidthSet = CH_WIDTH_20MHZ;
 	*new_ch_width = ch_width;
-
-	lim_update_bcn_op_ch_width(session->vdev, ch_width);
 
 	return lim_check_vht_op_mode_change(mac_ctx, session, *new_ch_width,
 					    sta_ptr->staAddr);
@@ -12339,6 +12397,7 @@ lim_get_connected_chan_for_mode(struct wlan_objmgr_psoc *psoc,
 				qdf_freq_t end_freq)
 {
 	struct wlan_channel *des_chan;
+	struct wlan_channel *standby_chan;
 	struct wlan_objmgr_vdev *vdev;
 	uint8_t vdev_id;
 
@@ -12369,6 +12428,20 @@ lim_get_connected_chan_for_mode(struct wlan_objmgr_psoc *psoc,
 		return des_chan;
 next:
 		wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+	}
+
+	/*
+	 *No active vdev found - check for standby MLO links
+	 *Only check for STA mode
+	 */
+	if (device_mode == QDF_STA_MODE) {
+		standby_chan =
+		mlo_get_standby_mlo_link_chan_in_freq_range(psoc,
+							    device_mode,
+							    start_freq,
+							    end_freq);
+		if (standby_chan)
+			return standby_chan;
 	}
 
 	return NULL;

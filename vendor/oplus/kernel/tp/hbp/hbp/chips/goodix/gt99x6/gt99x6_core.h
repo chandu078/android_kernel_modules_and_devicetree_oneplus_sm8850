@@ -29,10 +29,15 @@
 #include <linux/miscdevice.h>
 #include <linux/poll.h>
 
+#define FRAME_HEAD_LEN				16
+#define FRAME_PROTOCOL_OLD			1
+#define FRAME_PROTOCOL_NEW			2
+
 enum gt_chip_type {
 	GT9966 = 0,
 	GT9916,
-	GT9926
+	GT9926,
+	GT9976
 };
 
 
@@ -52,6 +57,8 @@ struct gt_core {
 	struct gt_board_data board_data;
 	struct miscdevice tool_misc_dev;
 	char tool_misc_dev_name[32];
+	u8 protocol_type;
+	u32 frame_len;
 };
 
 enum gesture_id {
@@ -114,6 +121,12 @@ enum _FTS_FP_ERROR_TYPE {
 	FTS_ANOTHER_FINGER_ON_NON_FP_ZONE = 0x02,
 	FTS_FINGERPRINT_AREA_NOT_MATCH = 0x01,
 };
+/* power off sequence delay (ms) */
+#define POWER_OFF_RESET_DELAY_MS		 5
+#define POWER_OFF_AVDD_DELAY_MS			 10
+#define POWER_OFF_VDDI_DELAY_MS			 10
+#define POWER_OFF_BUS_DELAY_MS			 20
+
 struct goodix_thp_hw_ops {
 	int (*read)(struct gt_core *ts_data, unsigned int addr, unsigned char *data, unsigned int len);
 	int (*write)(struct gt_core *ts_data, unsigned int addr, unsigned char *data, unsigned int len);

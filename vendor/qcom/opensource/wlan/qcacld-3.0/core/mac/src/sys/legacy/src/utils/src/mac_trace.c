@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2013-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -286,6 +286,8 @@ uint8_t *mac_trace_get_sme_msg_string(uint16_t sme_msg)
 		CASE_RETURN_STRING(eWNI_SME_STA_CSA_CONTINUE_REQ);
 		CASE_RETURN_STRING(eWNI_SME_ANTENNA_ISOLATION_RSP);
 		CASE_RETURN_STRING(eWNI_SME_CH_SWITCH_STARTED_NOTIFY);
+		CASE_RETURN_STRING(eWNI_SME_PASSTHRU_INIT_SESSION);
+		CASE_RETURN_STRING(eWNI_SME_PASSTHRU_DEINIT_SESSION);
 	default:
 		return (uint8_t *) "UNKNOWN";
 		break;
@@ -367,6 +369,7 @@ uint8_t *mac_trace_get_wma_msg_string(uint16_t wma_msg)
 		CASE_RETURN_STRING(WMA_RATE_UPDATE_IND);
 #ifdef FEATURE_WLAN_TDLS
 		CASE_RETURN_STRING(WMA_UPDATE_TDLS_PEER_STATE);
+		CASE_RETURN_STRING(WMA_UPDATE_TDLS_OFF_CHAN);
 #endif
 		CASE_RETURN_STRING(WMA_ADD_PERIODIC_TX_PTRN_IND);
 		CASE_RETURN_STRING(WMA_TX_POWER_LIMIT);
@@ -492,6 +495,7 @@ uint8_t *mac_trace_get_lim_msg_string(uint16_t lim_msg)
 		CASE_RETURN_STRING(SIR_LIM_AUTH_FAIL_TIMEOUT);
 		CASE_RETURN_STRING(SIR_LIM_AUTH_RSP_TIMEOUT);
 		CASE_RETURN_STRING(SIR_LIM_ASSOC_FAIL_TIMEOUT);
+		CASE_RETURN_STRING(SIR_LIM_DEAUTH_ACK_TIMEOUT);
 		CASE_RETURN_STRING(SIR_LIM_REASSOC_FAIL_TIMEOUT);
 		CASE_RETURN_STRING(SIR_LIM_HEART_BEAT_TIMEOUT);
 		CASE_RETURN_STRING(SIR_LIM_ADDTS_RSP_TIMEOUT);

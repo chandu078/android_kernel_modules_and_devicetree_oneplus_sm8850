@@ -279,6 +279,8 @@ typedef void dp_ptnr_soc_iter_func(struct dp_soc *ptnr_soc, void *arg,
 
 #define RX_SIDE 0
 #define TX_SIDE 1
+#define DP_MON_DEST_HIST_MAX 32
+#define DP_MON_DEST_PPDU_HIST_MAX 17
 
 /**
  * enum dp_pkt_xmit_type - The type of ingress stats are being referred
@@ -653,6 +655,7 @@ struct dp_rx_nbuf_frag_info {
  * @DP_STC_TX_FLOW_TABLE_TYPE: DP STC tx flow table
  * @DP_STC_CLASSIFIED_FLOW_TABLE_TYPE: DP STC classified flow table
  * @DP_TX_MON_BUF_HIST_TYPE: DP TX monitor buffer history
+ * @DP_MON_DEST_BUF_HIST_TYPE: DP monitor destination buffer history
  */
 enum dp_ctxt_type {
 	DP_PDEV_TYPE,
@@ -676,6 +679,7 @@ enum dp_ctxt_type {
 	DP_STC_TX_FLOW_TABLE_TYPE,
 	DP_STC_CLASSIFIED_FLOW_TABLE_TYPE,
 	DP_TX_MON_BUF_HIST_TYPE,
+	DP_MON_DEST_BUF_HIST_TYPE,
 };
 
 /**
@@ -773,6 +777,7 @@ struct dp_tx_ext_desc_pool_s {
  * @length:
  * @magic:
  * @timestamp_tick:
+ * @deferred_timestamp: save the time delta of tx desc
  * @flags: Flags to track the state of descriptor and special frame handling
  * @id: Descriptor ID
  * @dma_addr:
@@ -806,6 +811,7 @@ struct dp_tx_desc_s {
 #ifdef DP_TX_TRACKING
 	uint32_t magic;
 	uint64_t timestamp_tick;
+	uint16_t deferred_timestamp;
 #endif
 	uint16_t peer_id;
 	uint8_t vdev_id;
@@ -844,6 +850,7 @@ struct dp_tx_desc_s {
 #ifdef DP_TX_TRACKING
 	uint32_t magic;
 	uint64_t timestamp_tick;
+	uint16_t deferred_timestamp;
 #endif
 	uint32_t flags;
 	uint32_t id;
@@ -1471,6 +1478,12 @@ struct dp_soc_stats {
 		uint32_t hp_oos2;
 		/* tx desc freed as part of vdev detach */
 		uint32_t tx_comp_exception;
+		/* Number of duplicate tx desc */
+		uint32_t tx_desc_duplicate;
+		/* Number of unused tx desc */
+		uint32_t tx_desc_unused;
+		/* Number of tx desc when pdev is down */
+		uint32_t tx_desc_pdev_down;
 		/* TQM drops after/during peer delete */
 		uint64_t tqm_drop_no_peer;
 		/* Number of tx completions reaped per WBM2SW release ring */
@@ -3336,6 +3349,36 @@ struct dp_opt_dp_flt {
 };
 #endif
 
+#ifdef WLAN_FEATURE_DP_MON_DEST_RING_HISTORY
+/**
+ * struct dp_mon_dest_stats_record - DP mon destination ring stats entry
+ * @link_desc_va: link desc virtual address of last mismatched ppdu
+ * @ppdu_id: ppdu id from last mismatch
+ * @ppdu_list: list of mismatched ppdu id before reaching max count
+ * @timestamp: timestamp when this entry was recorded
+ */
+struct dp_mon_dest_stats_record {
+	void *link_desc_va;
+	uint32_t ppdu_id;
+	uint32_t ppdu_list[DP_MON_DEST_PPDU_HIST_MAX];
+	uint64_t timestamp;
+};
+
+/**
+ * struct dp_mon_dest_ring_history - DP mon destination ring stats
+ * @entry: history entries
+ * @index: Index where the last entry is written
+ * @current_ppdu_list: list of mismatched ppdu id before max count
+ * @ppdu_index: Index where the last ppdu id is written
+ */
+struct dp_mon_dest_ring_history {
+	struct dp_mon_dest_stats_record entry[DP_MON_DEST_HIST_MAX];
+	qdf_atomic_t index;
+	uint32_t current_ppdu_list[DP_MON_DEST_PPDU_HIST_MAX];
+	qdf_atomic_t ppdu_index;
+};
+#endif
+
 /* SOC level structure for data path */
 struct dp_soc {
 	/**
@@ -3990,6 +4033,9 @@ struct dp_soc {
 #endif
 	/* flag to check if wds is not supported */
 	bool wds_not_supported;
+#ifdef WLAN_FEATURE_DP_MON_DEST_RING_HISTORY
+	struct dp_mon_dest_ring_history *mon_dest_ring_history[MAX_NUM_LMAC_HW];
+#endif
 };
 
 /*
@@ -4665,12 +4711,14 @@ struct dp_vdev_stats {
  * @UL_DELAY_CALC_ID_TSF: TSF request report ID
  * @UL_DELAY_CALC_ID_FW: FW request report ID
  * @UL_DELAY_CALC_ID_QOS: QoS latency stats ID
+ * @UL_DELAY_CALC_ID_INTERNAL: DP internal stats ID
  * @UL_DELAY_CALC_ID_MAX: Max ID
  **/
 enum ul_delay_client_id {
 	UL_DELAY_CALC_ID_TSF,
 	UL_DELAY_CALC_ID_FW,
 	UL_DELAY_CALC_ID_QOS,
+	UL_DELAY_CALC_ID_INTERNAL,
 	UL_DELAY_CALC_ID_MAX
 };
 
@@ -4689,16 +4737,12 @@ struct dp_latency_stats {
 /**
  * struct dp_ul_delay_stats - Delay stats for bus bw
  * and opt_dp
- * @prev_delay_accum_opt_dp: Total delay during last poll in opt_dp
- * @prev_pkt_accum_opt_dp: pkt accumulated during last poll in opt_dp
- * @prev_delay_accum_bus_bw: Total delay during last scheduled bus bw
- * @prev_pkt_accum_bus_bw: pkt accumulated during last scheduled bus bw
+ * @prev_delay_accum: Total delay during last poll
+ * @prev_pkt_accum: pkt accumulated during last poll
  */
 struct dp_ul_delay_stats {
-	uint32_t prev_delay_accum_opt_dp;
-	uint32_t prev_pkt_accum_opt_dp;
-	uint32_t prev_delay_accum_bus_bw;
-	uint32_t prev_pkt_accum_bus_bw;
+	uint32_t prev_delay_accum;
+	uint32_t prev_pkt_accum;
 };
 
 #define PERC_BUCKET_SIZE 26
@@ -5087,7 +5131,10 @@ struct dp_vdev {
 	bool dp_eapol_stats;
 	/* Tx NSS stats received from FW */
 	struct cdp_htt_stats_tx_vdev_nss_tlv tx_vdev_nss;
-	struct dp_ul_delay_stats prev_delay_stats;
+	struct dp_ul_delay_stats ul_delay_stats[UL_DELAY_CALC_ID_MAX];
+#ifdef DRIVER_PASSTHRU_MODE
+	qdf_freq_t passthru_freq;
+#endif
 };
 
 enum {

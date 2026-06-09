@@ -3385,15 +3385,21 @@ static const struct gen8_nonctxt_regs gen8_2_0_nonctxt_regs[] = {
 	{ GEN8_PC_CHICKEN_BITS_2, 0x00000200, BIT(PIPE_BV) | BIT(PIPE_BR) },
 	{ GEN8_PC_CHICKEN_BITS_3, 0x00500000, BIT(PIPE_BV) | BIT(PIPE_BR) },
 	{ GEN8_PC_CHICKEN_BITS_4, 0x00500050, BIT(PIPE_BV) | BIT(PIPE_BR) },
-	/* Disable Dead Draw Merge scheme on RB-HLSQ */
-	{ GEN8_RB_RBP_CNTL, BIT(5), BIT(PIPE_BV) | BIT(PIPE_BR) },
+	/*
+	 * BIT(5): Disable Dead Draw Merge scheme on RB-HLSQ
+	 * BIT(6): Disable pre-mvcc dead draw merge scheme on LRZ-RB
+	 */
+	{ GEN8_RB_RBP_CNTL, BIT(5) | BIT(6), BIT(PIPE_BV) | BIT(PIPE_BR) },
 	{ GEN8_RB_CCU_CNTL, 0x00000068, BIT(PIPE_BR) },
 	/* Partially enable perf clear, Disable DINT to c/z be data forwarding */
 	{ GEN8_RB_CCU_DBG_ECO_CNTL, 0x00002200, BIT(PIPE_BR) },
+	/* Disable the early return of eoblk from RB to LRZ in consZ */
+	{ GEN8_RB_DBG_ECO_CNTL, BIT(17), BIT(PIPE_BV) | BIT(PIPE_BR) },
 	{ GEN8_RB_GC_GMEM_PROTECT, 0x12000000, BIT(PIPE_BR) },
 	{ GEN8_RB_RESOLVE_PREFETCH_CNTL, 0x00000007, BIT(PIPE_BR) },
 	{ GEN8_RB_CMP_DBG_ECO_CNTL, 0x00004000, BIT(PIPE_BR) },
 	{ GEN8_RBBM_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
+	{ GEN8_RBBM_SLICE_PERFCTR_CNTL, BIT(0), BIT(PIPE_NONE) },
 	{ GEN8_RBBM_SLICE_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
 	{ GEN8_RBBM_POWER_UP_RESET_SW_OVERRIDE, 0x70809060, BIT(PIPE_NONE) },
 	{ GEN8_RBBM_POWER_UP_RESET_SW_BV_OVERRIDE, 0x30000000, BIT(PIPE_NONE) },
@@ -3406,10 +3412,12 @@ static const struct gen8_nonctxt_regs gen8_2_0_nonctxt_regs[] = {
 	{ GEN8_SP_CHICKEN_BITS, BIT(26), BIT(PIPE_NONE) },
 	/* Disable LPAC large-LM mode */
 	{ GEN8_SP_SS_CHICKEN_BITS_0, BIT(3), BIT(PIPE_NONE) },
+	{ GEN8_SP_CHICKEN_BITS_1, BIT(3), BIT(PIPE_NONE) },
 	/* Disable PS out of order retire */
 	{ GEN8_SP_CHICKEN_BITS_2, 0xc20800, BIT(PIPE_NONE) },
 	{ GEN8_SP_CHICKEN_BITS_3, 0x00300000, BIT(PIPE_NONE) },
 	{ GEN8_SP_PERFCTR_SHADER_MASK, 0x0000003f, BIT(PIPE_NONE) },
+	{ GEN8_SP_HLSQ_DBG_ECO_CNTL, BIT(14),  BIT(PIPE_NONE) },
 	/* Ignore HLSQ shared constant feedback from SP */
 	{ GEN8_SP_HLSQ_DBG_ECO_CNTL_1, BIT(17), BIT(PIPE_NONE) },
 	/* Disable CS dead batch merge */
@@ -3932,6 +3940,7 @@ static const struct gen8_nonctxt_regs gen8_9_0_nonctxt_regs[] = {
 	/* Disable PS out of order retire */
 	{ GEN8_SP_CHICKEN_BITS_2, 0xc21800, BIT(PIPE_NONE) },
 	{ GEN8_RBBM_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
+	{ GEN8_RBBM_SLICE_PERFCTR_CNTL, BIT(0), BIT(PIPE_NONE) },
 	{ GEN8_RBBM_SLICE_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
 	{ GEN8_CP_SMMU_STREAM_ID_LPAC, 0x00000101, BIT(PIPE_NONE) },
 	{ GEN8_UCHE_MODE_CNTL, 0x80080000, BIT(PIPE_NONE) },
@@ -3943,6 +3952,8 @@ static const struct gen8_nonctxt_regs gen8_9_0_nonctxt_regs[] = {
 	{ GEN8_GRAS_DBG_ECO_CNTL, 0x00000800, BIT(PIPE_BR) | BIT(PIPE_BV) },
 	{ GEN8_RB_CCU_CNTL, 0x00000068, BIT(PIPE_BR) },
 	{ GEN8_RB_CCU_DBG_ECO_CNTL, 0x00002200, BIT(PIPE_BR) },
+	/* Disable the early return of eoblk from RB to LRZ in consZ */
+	{ GEN8_RB_DBG_ECO_CNTL, BIT(17), BIT(PIPE_BV) | BIT(PIPE_BR) },
 	{ GEN8_RB_GC_GMEM_PROTECT, 0x02600000, BIT(PIPE_BR) },
 	{ GEN8_RB_RESOLVE_PREFETCH_CNTL, 0x00000007, BIT(PIPE_BR) },
 	{ GEN8_RB_CMP_DBG_ECO_CNTL, 0x00004000, BIT(PIPE_BR) },
@@ -3961,6 +3972,7 @@ static const struct gen8_nonctxt_regs gen8_9_0_nonctxt_regs[] = {
 	{ GEN8_VFD_CB_LP_REQ_CNT, 0x00000020, BIT(PIPE_BR) | BIT(PIPE_BV) },
 	{ GEN8_SP_CHICKEN_BITS_3, 0x00300000, BIT(PIPE_NONE) },
 	{ GEN8_SP_PERFCTR_SHADER_MASK, 0x0000003f, BIT(PIPE_NONE) },
+	{ GEN8_SP_HLSQ_DBG_ECO_CNTL, BIT(14),  BIT(PIPE_NONE) },
 	/* Ignore HLSQ shared constant feedback from SP */
 	{ GEN8_SP_HLSQ_DBG_ECO_CNTL_1, BIT(17), BIT(PIPE_NONE) },
 	/* Disable CS dead batch merge */

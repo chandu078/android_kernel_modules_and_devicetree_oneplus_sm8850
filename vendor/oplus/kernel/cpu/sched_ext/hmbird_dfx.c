@@ -171,7 +171,12 @@ static int scene_stat_show(struct seq_file *m, void *v)
 		scene_stat_info = &g_scene_stat.per_scene_stat[i];
 		int bpf_status_value = atomic_read(&scene_stat_info->status[BPF_STATUS]);
 		char bpf_status_str[BPF_STATUS_VALUE_MAX_LEN];
-		sprintf(bpf_status_str, "%d (%s)", bpf_status_value, bpf_status_value_str[bpf_status_value]);
+		const char *status_name = "unknown";
+
+		if (bpf_status_value >= 0 && bpf_status_value < BPF_STATUS_VALUE_COUNT)
+			status_name = bpf_status_value_str[bpf_status_value];
+
+		snprintf(bpf_status_str, sizeof(bpf_status_str), "%d (%s)", bpf_status_value, status_name);
 
 		ret = snprintf(&buf[idx], (PAGE_SIZE - idx), "%-15s%-15s%-12d%-12d%-12d%-12d%-12d\n",
 				scene_str[i],

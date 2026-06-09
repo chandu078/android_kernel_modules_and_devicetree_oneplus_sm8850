@@ -882,7 +882,6 @@ __lim_handle_sme_start_bss_request(struct mac_context *mac_ctx, uint32_t *msg_bu
 	int32_t ucast_cipher;
 	int32_t auth_mode;
 	int32_t akm;
-	int32_t rsn_caps;
 	enum QDF_OPMODE opmode;
 	ePhyChanBondState cb_mode;
 	enum bss_type bss_type;
@@ -1101,10 +1100,6 @@ __lim_handle_sme_start_bss_request(struct mac_context *mac_ctx, uint32_t *msg_bu
 
 		session->txLdpcIniFeatureEnabled =
 				mac_ctx->mlme_cfg->ht_caps.tx_ldpc_enable;
-		rsn_caps = wlan_crypto_get_param(session->vdev,
-						 WLAN_CRYPTO_PARAM_RSN_CAP);
-		session->limRmfEnabled =
-			rsn_caps & WLAN_CRYPTO_RSN_CAP_MFP_ENABLED ? 1 : 0;
 
 		qdf_mem_copy((void *)&session->rateSet,
 			     (void *)&sme_start_bss_req->operationalRateSet,
@@ -1938,6 +1933,19 @@ static void lim_check_oui_and_update_session(struct mac_context *mac_ctx,
 	 */
 	if (is_vendor_ap_present)
 		lim_update_he_caps_htc(session, !is_vendor_ap_present);
+
+	/* Check if ACTION_OUI_LIMIT_BW matches for 2.4GHz to disable HT40 */
+	session->action_oui_limit_bw_2g = false;
+	if (WLAN_REG_IS_24GHZ_CH_FREQ(bss_desc->chan_freq)) {
+		if (wlan_action_oui_search(mac_ctx->psoc,
+					   &vendor_ap_search_attr,
+					   ACTION_OUI_LIMIT_BW)) {
+			pe_debug("Disabling HT40 for vdev %d for IoT AP " QDF_MAC_ADDR_FMT,
+				 session->vdev_id, QDF_MAC_ADDR_REF(bss_desc->bssId));
+			session->action_oui_limit_bw_2g = true;
+		}
+	}
+
 }
 
 static enum mlme_dot11_mode
@@ -2988,6 +2996,7 @@ static void lim_update_sae_config(struct mac_context *mac,
 {
 	struct wlan_crypto_pmksa *pmksa;
 	struct qdf_mac_addr bssid;
+	uint8_t zero_pmkid[PMKID_LEN] = {0};
 
 	qdf_mem_copy(bssid.bytes, session->bssId,
 		     QDF_MAC_ADDR_SIZE);
@@ -2999,8 +3008,14 @@ static void lim_update_sae_config(struct mac_context *mac,
 	if (!pmksa)
 		return;
 
+	if (!qdf_mem_cmp(pmksa->pmkid, zero_pmkid, PMKID_LEN)) {
+		pe_debug("PMKSA found but pmkid is all 0 for BSSID " QDF_MAC_ADDR_FMT,
+			 QDF_MAC_ADDR_REF(bssid.bytes));
+		return;
+	}
+
 	session->sae_pmk_cached = true;
-	pe_debug("PMKSA Found for BSSID=" QDF_MAC_ADDR_FMT,
+	pe_debug("PMKSA Found for BSSID " QDF_MAC_ADDR_FMT,
 		 QDF_MAC_ADDR_REF(bssid.bytes));
 }
 #else
@@ -3254,6 +3269,7 @@ lim_disable_bformee_for_iot_ap(struct mac_context *mac_ctx,
 
 	vendor_ap_search_attr.ie_data = (uint8_t *)&bss_desc->ieFields[0];
 	vendor_ap_search_attr.ie_length = ie_len;
+	vendor_ap_search_attr.mac_addr = &bss_desc->bssId[0];
 
 	if (wlan_action_oui_search(mac_ctx->psoc,
 				   &vendor_ap_search_attr,
@@ -3304,55 +3320,6 @@ void lim_enable_he_dynamic_smps(struct pe_session *session)
 {}
 #endif
 
-/**
- * lim_cfg_dsmps_for_iot_ap() - Configure dynamic SMPS for IOT AP
- *@mac_ctx: mac context
- *@session: pe session
- *@bss_desc: bss descriptor
- *
- * When connecting to specific IOT AP, Configure STA HT and HE dynamic SMPS
- * capabilities base on whitelist and blacklist.
- * if while list exist, ignore blacklist, else check blacklist.
- *
- * Return: None
- */
-static void
-lim_cfg_dsmps_for_iot_ap(struct mac_context *mac_ctx,
-			 struct pe_session *session,
-			 struct bss_description *bss_desc)
-{
-	struct action_oui_search_attr vendor_ap_search_attr = {0};
-	uint16_t ie_len;
-	bool is_empty;
-
-	ie_len = wlan_get_ielen_from_bss_description(bss_desc);
-
-	vendor_ap_search_attr.ie_data = (uint8_t *)&bss_desc->ieFields[0];
-	vendor_ap_search_attr.ie_length = ie_len;
-
-	if (wlan_action_oui_search(mac_ctx->psoc,
-				   &vendor_ap_search_attr,
-				   ACTION_OUI_ENABLE_DYNAMIC_SMPS)) {
-		lim_enable_ht_dynamic_smps(session);
-		lim_enable_he_dynamic_smps(session);
-		pe_debug("Enable HT and HE D-SMPS for this IOT AP");
-		return;
-	}
-
-	is_empty = wlan_action_oui_is_empty(mac_ctx->psoc,
-					    ACTION_OUI_ENABLE_DYNAMIC_SMPS);
-	if (!is_empty)
-		return;
-
-	if (wlan_action_oui_search(mac_ctx->psoc,
-				   &vendor_ap_search_attr,
-				   ACTION_OUI_DISABLE_DYNAMIC_SMPS)) {
-		lim_disable_ht_dynamic_smps(session);
-		lim_disable_he_dynamic_smps(session);
-		pe_debug("Disable HT and HE D-SMPS for this IOT AP");
-	}
-}
-
 #ifdef WLAN_FEATURE_11BE_MLO
 static bool
 lim_is_single_link_mlo_sta(struct pe_session *session)
@@ -3369,6 +3336,100 @@ lim_is_single_link_mlo_sta(struct pe_session *session)
 	return false;
 }
 #endif
+
+#define DSMPS_EN BIT(0)
+#define DSMPS_BASE_ON_RSSI_EN BIT(1)
+void
+lim_cfg_dsmps_for_iot_ap(struct mac_context *mac_ctx,
+			 struct pe_session *session,
+			 struct bss_description *bss_desc,
+			 bool is_roaming)
+{
+	struct action_oui_search_attr vendor_ap_search_attr = {0};
+	uint16_t ie_len;
+	bool oui_matched = false;
+	bool no_allow_list = false;
+	uint8_t vdev_param = 0;
+
+	/* Handle non-STA modes first */
+	if (session->opmode != QDF_STA_MODE) {
+		lim_disable_ht_dynamic_smps(session);
+		lim_disable_he_dynamic_smps(session);
+		vdev_param = 0;
+		goto set_param;
+	}
+
+	/*
+	 * Check if this is a 2G-only STA connection.
+	 * 2 GHz aux listen is not supported, so DSMPS must be disabled
+	 * for all 2G connections, even if the AP is in the allowlist.
+	 */
+	if (wlan_reg_is_24ghz_ch_freq(bss_desc->chan_freq)) {
+		if (!IS_DOT11_MODE_EHT(session->dot11mode) ||
+		    lim_is_single_link_mlo_sta(session)) {
+			lim_disable_ht_dynamic_smps(session);
+			lim_disable_he_dynamic_smps(session);
+			vdev_param = 0;
+			goto set_param;
+		}
+	}
+
+	ie_len = wlan_get_ielen_from_bss_description(bss_desc);
+	vendor_ap_search_attr.ie_data = (uint8_t *)&bss_desc->ieFields[0];
+	vendor_ap_search_attr.ie_length = ie_len;
+	vendor_ap_search_attr.mac_addr = &bss_desc->bssId[0];
+
+	no_allow_list = wlan_action_oui_is_empty(mac_ctx->psoc,
+						 ACTION_OUI_ENABLE_DYNAMIC_SMPS);
+	if (no_allow_list) {
+		pe_debug("allowlist not enabled");
+		goto denylist;
+	}
+
+	oui_matched = wlan_action_oui_search(mac_ctx->psoc,
+					     &vendor_ap_search_attr,
+					     ACTION_OUI_ENABLE_DYNAMIC_SMPS);
+	if (!is_roaming && oui_matched) {
+		lim_enable_ht_dynamic_smps(session);
+		lim_enable_he_dynamic_smps(session);
+		pe_debug("Enable HT and HE D-SMPS for this IOT AP");
+
+		if (wlan_action_oui_search(mac_ctx->psoc,
+					   &vendor_ap_search_attr,
+					   ACTION_OUI_ENABLE_DSMPS_BY_RSSI))
+			vdev_param = DSMPS_EN | DSMPS_BASE_ON_RSSI_EN;
+		else
+			vdev_param = DSMPS_EN;
+	} else {
+		vdev_param = 0;
+	}
+	goto set_param;
+
+denylist:
+	if (wlan_action_oui_search(mac_ctx->psoc,
+				   &vendor_ap_search_attr,
+				   ACTION_OUI_DISABLE_DYNAMIC_SMPS)) {
+		lim_disable_ht_dynamic_smps(session);
+		lim_disable_he_dynamic_smps(session);
+		pe_debug("Disable HT and HE D-SMPS for this IOT AP");
+		vdev_param = 0;
+	} else {
+		if (wlan_action_oui_search(mac_ctx->psoc,
+					   &vendor_ap_search_attr,
+					   ACTION_OUI_ENABLE_DSMPS_BY_RSSI))
+			vdev_param = DSMPS_EN | DSMPS_BASE_ON_RSSI_EN;
+		else
+			vdev_param = DSMPS_EN;
+	}
+
+set_param:
+	pe_debug("DSMPS vdev_param=0x%x vdev_id=%d roaming=%d %s used",
+		 vdev_param, session->vdev_id, is_roaming,
+		 no_allow_list ? "denylist" : "allowlist");
+	wma_cli_set_command(session->vdev_id,
+			    wmi_vdev_param_dsmps_control,
+			    vdev_param, VDEV_CMD);
+}
 
 void
 lim_disable_ht_he_dynamic_smps(struct pe_session *session,
@@ -3607,6 +3668,8 @@ lim_fill_pe_session(struct mac_context *mac_ctx, struct pe_session *session,
 	session->gLimPhyMode = bss_desc->nwType;
 	handle_ht_capabilityand_ht_info(mac_ctx, session);
 
+	if (session->action_oui_limit_bw_2g)
+		cb_mode = PHY_SINGLE_CHANNEL_CENTERED;
 	session->htSupportedChannelWidthSet = cb_mode ? 1 : 0;
 	session->htRecommendedTxWidthSet =
 		session->htSupportedChannelWidthSet;
@@ -3670,9 +3733,6 @@ lim_fill_pe_session(struct mac_context *mac_ctx, struct pe_session *session,
 	}
 
 	lim_disable_bformee_for_iot_ap(mac_ctx, session, bss_desc);
-
-	lim_disable_ht_he_dynamic_smps(session, bss_desc->chan_freq);
-	lim_cfg_dsmps_for_iot_ap(mac_ctx, session, bss_desc);
 
 	mlme_obj->reg_tpc_obj.is_power_constraint_abs =
 						!is_pwr_constraint;
@@ -4461,7 +4521,7 @@ lim_fill_rsn_ie(struct mac_context *mac_ctx, struct pe_session *session,
 	QDF_STATUS status;
 	uint8_t *rsn_ie;
 	uint8_t rsn_ie_len = 0;
-	struct wlan_crypto_pmksa pmksa, *pmksa_peer;
+	struct wlan_crypto_pmksa pmksa, *pmksa_peer, fill_pmksa;
 	struct bss_description *bss_desc;
 	int32_t akm;
 
@@ -4510,19 +4570,23 @@ lim_fill_rsn_ie(struct mac_context *mac_ctx, struct pe_session *session,
 		lim_get_mld_peer(session->vdev, &pmksa.bssid);
 	}
 
+	qdf_mem_zero(&fill_pmksa, sizeof(fill_pmksa));
 	pmksa_peer = wlan_crypto_get_peer_pmksa(session->vdev, &pmksa);
-	if (pmksa_peer)
+	if (pmksa_peer) {
 		pe_debug("PMKSA found");
+		qdf_mem_copy(&fill_pmksa, pmksa_peer, sizeof(fill_pmksa));
+	}
 
 	akm = wlan_crypto_get_param(session->vdev,
 				    WLAN_CRYPTO_PARAM_KEY_MGMT);
 	if (pmksa_peer && WLAN_CRYPTO_IS_WPA2(akm)) {
-		pe_debug("WPA2 does not support PMKID, clearing PMKID for AKM %d",
-			 akm);
-		qdf_mem_zero(pmksa_peer->pmkid, sizeof(pmksa_peer->pmkid));
+		pe_debug("vdev:%d WPA2 does not support PMKID",
+			 session->vdev_id);
+		qdf_mem_zero(fill_pmksa.pmkid, sizeof(fill_pmksa.pmkid));
 	}
 
-	lim_update_connect_rsn_ie(session, rsn_ie, pmksa_peer);
+	lim_update_connect_rsn_ie(session, rsn_ie,
+				  pmksa_peer ? &fill_pmksa : NULL);
 	qdf_mem_free(rsn_ie);
 
 	/*
@@ -4532,8 +4596,8 @@ lim_fill_rsn_ie(struct mac_context *mac_ctx, struct pe_session *session,
 	 */
 	if (pmksa_peer) {
 		wlan_cm_set_psk_pmk(mac_ctx->pdev, session->vdev_id,
-				    pmksa_peer->pmk, pmksa_peer->pmk_len);
-		lim_update_pmksa_to_profile(session->vdev, pmksa_peer);
+				    fill_pmksa.pmk, fill_pmksa.pmk_len);
+		lim_update_pmksa_to_profile(session->vdev, &fill_pmksa);
 	}
 
 	return QDF_STATUS_SUCCESS;
@@ -4800,6 +4864,8 @@ lim_fill_session_params(struct mac_context *mac_ctx,
 		req->req_fail_status_code = req_fail_status_code;
 		return QDF_STATUS_E_FAILURE;
 	}
+
+	lim_cfg_dsmps_for_iot_ap(mac_ctx, session, bss_desc, false);
 	lim_set_amsdu_for_2g_oui(mac_ctx, session, bss_desc);
 
 	lim_copy_ml_partner_info_to_session(session, req);
@@ -6131,6 +6197,91 @@ static uint8_t lim_get_num_tpe_octets(uint8_t max_transmit_power_count)
 	return 1 << (max_transmit_power_count - 1);
 }
 
+static
+void lim_parse_eirp_tpe(struct mac_context *mac, struct pe_session *session,
+			struct vdev_mlme_obj *vdev_mlme,
+			tDot11fIEtransmit_power_env *single_tpe)
+{
+	struct ch_params ch_params = {0};
+	uint8_t expect_num;
+	uint8_t bw_num;
+	uint8_t eirp_pwr;
+	uint8_t i;
+	struct chan_power_info *chan_eirp_power_info;
+
+	if (!vdev_mlme || !single_tpe) {
+		pe_err("Invalid parameters");
+		return;
+	}
+
+	if (single_tpe->max_tx_pwr_count >
+	    MAX_TX_PWR_COUNT_FOR_160MHZ) {
+		pe_debug("Invalid max tx pwr count: %d",
+			 single_tpe->max_tx_pwr_count);
+		single_tpe->max_tx_pwr_count =
+			MAX_TX_PWR_COUNT_FOR_160MHZ;
+	}
+
+	expect_num = lim_get_num_pwr_levels(false, session->ch_width);
+	if (expect_num > 0)
+		single_tpe->max_tx_pwr_count =
+			QDF_MIN(single_tpe->max_tx_pwr_count, expect_num - 1);
+
+	bw_num = sizeof(get_next_higher_bw) /
+			sizeof(get_next_higher_bw[0]);
+	if (single_tpe->max_tx_pwr_count >= bw_num) {
+		pe_debug("tx pwr count: %d, larger than bw num: %d",
+			 single_tpe->max_tx_pwr_count, bw_num);
+		single_tpe->max_tx_pwr_count = bw_num - 1;
+	}
+	vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels = 0;
+	ch_params.ch_width = CH_WIDTH_20MHZ;
+	/*
+	 * Update tpe power till 160 MHZ, 320 MHZ power will be
+	 * advertised via ext_max_tx_power param of TPE IE.
+	 */
+	for (i = 0; i < single_tpe->max_tx_pwr_count + 1 &&
+	     (ch_params.ch_width != CH_WIDTH_320MHZ); i++) {
+		wlan_reg_set_channel_params_for_pwrmode(
+						mac->pdev,
+						session->curr_op_freq, 0,
+						&ch_params,
+						REG_CURRENT_PWR_MODE);
+		chan_eirp_power_info =
+			&vdev_mlme->reg_tpc_obj.chan_eirp_power_info[i];
+		chan_eirp_power_info->chan_cfreq =
+					ch_params.mhz_freq_seg0;
+		chan_eirp_power_info->tx_power =
+				single_tpe->tx_power[i];
+		if (ch_params.ch_width != CH_WIDTH_INVALID)
+			ch_params.ch_width =
+				get_next_higher_bw[ch_params.ch_width];
+		vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels++;
+	}
+
+	if (ch_params.ch_width == CH_WIDTH_320MHZ &&
+	    vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels <
+		MAX_NUM_EIRP_PWR_LEVEL) {
+		qdf_mem_zero(&ch_params, sizeof(ch_params));
+		ch_params.ch_width = CH_WIDTH_320MHZ;
+		ch_params.mhz_freq_seg1 =
+			wlan_reg_compute_6g_center_freq_from_cfi(
+					session->ch_center_freq_seg1);
+		eirp_pwr = lim_get_eirp_320_power_from_tpe_ie(single_tpe);
+		if (eirp_pwr == INVALID_TPE_POWER)
+			return;
+		wlan_reg_set_channel_params_for_pwrmode(
+				mac->pdev, session->curr_op_freq, 0,
+				&ch_params, REG_CURRENT_PWR_MODE);
+		chan_eirp_power_info =
+			&vdev_mlme->reg_tpc_obj.chan_eirp_power_info[
+			vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels];
+		chan_eirp_power_info->chan_cfreq = ch_params.mhz_freq_seg0;
+		chan_eirp_power_info->tx_power = eirp_pwr;
+		vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels++;
+	}
+}
+
 void lim_parse_tpe_ie(struct mac_context *mac, struct pe_session *session,
 		      tDot11fIEtransmit_power_env *tpe_ies, uint8_t num_tpe_ies,
 		      tDot11fIEhe_op *he_op, bool *has_tpe_updated)
@@ -6560,6 +6711,16 @@ parse_eirp_tpe:
 		pe_debug("eirp_power %d", vdev_mlme->reg_tpc_obj.eirp_power);
 		if (!psd_set)
 			vdev_mlme->reg_tpc_obj.is_psd_power = false;
+		/* For SP power type, host needs populated both PSD and
+		 * EIRP power tpe to target. If num_eirp_pwr_levels is
+		 * not extracted due to psd mode (psd_set = true),
+		 * then update it here
+		 */
+		if (!vdev_mlme->reg_tpc_obj.num_eirp_pwr_levels &&
+		    vdev_mlme->reg_tpc_obj.num_psd_pwr_levels &&
+		    conn_pwr_type_sp)
+			lim_parse_eirp_tpe(mac, session, vdev_mlme,
+					   &single_tpe);
 	}
 
 parse_both_tpe_present:
@@ -10271,7 +10432,7 @@ static void lim_process_sme_start_beacon_req(struct mac_context *mac, uint32_t *
 	}
 }
 
-static void lim_mon_change_channel(
+static void lim_non_bss_change_channel(
 	struct mac_context *mac_ctx,
 	struct pe_session *session_entry)
 {
@@ -10296,8 +10457,9 @@ static void lim_change_channel(
 	struct mac_context *mac_ctx,
 	struct pe_session *session_entry)
 {
-	if (session_entry->bssType == eSIR_MONITOR_MODE)
-		return lim_mon_change_channel(mac_ctx, session_entry);
+	if (session_entry->bssType == eSIR_MONITOR_MODE ||
+	    session_entry->bssType == eSIR_PASSTHRU_MODE)
+		return lim_non_bss_change_channel(mac_ctx, session_entry);
 
 	mlme_set_chan_switch_in_progress(session_entry->vdev, true);
 
@@ -10445,6 +10607,37 @@ lim_update_eht_capable(struct pe_session *session, uint8_t dot11mode)
 {}
 #endif
 
+#ifdef DRIVER_PASSTHRU_MODE
+/**
+ * lim_send_passthru_channel_change_rsp() - Send Passthru channel change
+ *  response
+ * @session : pointer to PE session
+ *
+ * This function is called to send channel change response for
+ * Passthru interface when the new request matches the existing config.
+ *
+ * Return: None
+ */
+static
+void lim_send_passthru_channel_change_rsp(struct pe_session *session)
+{
+	struct scheduler_msg msg = {0};
+
+	msg.type = eWNI_SME_MONITOR_MODE_VDEV_UP;
+	msg.bodyval = session->vdev_id;
+
+	if (QDF_STATUS_SUCCESS !=
+	    scheduler_post_message(QDF_MODULE_ID_PE,
+				   QDF_MODULE_ID_SME,
+				   QDF_MODULE_ID_SME, &msg))
+		pe_err("Failed to post channel change rsp msg");
+}
+#else
+static inline
+void lim_send_passthru_channel_change_rsp(struct pe_session *session)
+{
+}
+#endif
 
 /**
  * lim_process_sme_channel_change_request() - process sme ch change req
@@ -10520,7 +10713,13 @@ static void lim_process_sme_channel_change_request(struct mac_context *mac_ctx,
 						    ch_change_req))) {
 		pe_err("Target channel and mode is same as current channel and mode channel freq %d and mode %d",
 		       session_entry->curr_op_freq, session_entry->ch_width);
-		lim_abort_channel_change(mac_ctx, ch_change_req->vdev_id);
+
+		if (LIM_IS_PASSTHRU_ROLE(session_entry))
+			lim_send_passthru_channel_change_rsp(session_entry);
+		else
+			lim_abort_channel_change(mac_ctx,
+						 ch_change_req->vdev_id);
+
 		return;
 	}
 
@@ -10556,6 +10755,7 @@ static void lim_process_sme_channel_change_request(struct mac_context *mac_ctx,
 			 session_entry->dot11mode);
 	} else if (IS_DOT11_MODE_HE(ch_change_req->dot11mode) &&
 	     (session_entry->opmode == QDF_MONITOR_MODE ||
+	      session_entry->opmode == QDF_PASSTHRU_MODE ||
 	      lim_is_session_he_capable(session_entry))) {
 		lim_update_session_he_capable_chan_switch
 			(mac_ctx, session_entry, target_freq);
@@ -10587,6 +10787,7 @@ static void lim_process_sme_channel_change_request(struct mac_context *mac_ctx,
 
 	if (IS_DOT11_MODE_EHT(ch_change_req->dot11mode) &&
 	    ((QDF_MONITOR_MODE == session_entry->opmode) ||
+	     session_entry->opmode == QDF_PASSTHRU_MODE ||
 	     lim_is_session_eht_capable(session_entry))) {
 		lim_update_session_eht_capable_chan_switch(
 				mac_ctx, session_entry, target_freq);

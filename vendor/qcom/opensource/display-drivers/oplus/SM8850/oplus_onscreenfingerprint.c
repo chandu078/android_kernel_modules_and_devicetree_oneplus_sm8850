@@ -5123,3 +5123,102 @@ ssize_t oplus_ofp_get_longrui_aod_config_attr(struct kobject *obj,
 
 	return sprintf(buf, "%u\n", p_oplus_ofp_params->longrui_aod_config);
 }
+//bool low_pwm_aod_flag = 0;
+int oplus_ofp_set_low_pwm_aod_mode(void *buf)
+{
+	int rc = 0;
+	unsigned int refresh_rate = 0;
+	unsigned int *low_pwm_aod_mode = buf;
+	struct dsi_display *display = oplus_display_get_current_display();
+	struct oplus_ofp_params *p_oplus_ofp_params = oplus_ofp_get_params(oplus_ofp_display_id);
+
+	OFP_DEBUG("start\n");
+
+	if (!buf || !display || !p_oplus_ofp_params) {
+		OFP_ERR("Invalid params\n");
+		return -EINVAL;
+	}
+
+	refresh_rate = display->panel->cur_mode->timing.refresh_rate;
+	if (*low_pwm_aod_mode && (refresh_rate == 60)) {
+		/* set low pwm aod mode */
+		p_oplus_ofp_params->low_pwm_aod_mode = true;
+	} else {
+		p_oplus_ofp_params->low_pwm_aod_mode = false;
+	}
+
+	//p_oplus_ofp_params->low_pwm_aod_mode = (*low_pwm_aod_mode);
+	OFP_INFO("low_pwm_aod_mode:0x%x\n", p_oplus_ofp_params->low_pwm_aod_mode);
+	OPLUS_OFP_TRACE_INT("oplus_ofp_low_pwm_aod_mode", p_oplus_ofp_params->low_pwm_aod_mode);
+
+	if (p_oplus_ofp_params->low_pwm_aod_mode) {
+		rc = oplus_ofp_display_cmd_set(display, DSI_CMD_SET_SWITCH_LOW_PWM_AOD_ON);
+		if (rc) {
+			OFP_ERR("[%s] failed to send DSI_CMD_SET_SWITCH_LOW_PWM_AOD_ON cmds, rc=%d\n", display->name, rc);
+		}
+		//low_pwm_aod_flag = true;
+	} else {
+		rc = oplus_ofp_display_cmd_set(display, DSI_CMD_SET_SWITCH_LOW_PWM_AOD_OFF);
+		if (rc) {
+			OFP_ERR("[%s] failed to send DSI_CMD_SET_SWITCH_LOW_PWM_AOD_OFF cmds, rc=%d\n", display->name, rc);
+		}
+		//low_pwm_aod_flag = false;
+	}
+
+	OPLUS_OFP_TRACE_END("oplus_ofp_set_low_pwm_aod_mode");
+
+	OFP_DEBUG("end\n");
+
+	return rc;
+}
+
+ssize_t oplus_ofp_set_low_pwm_aod_mode_attr(struct kobject *obj,
+	struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int rc = 0;
+	unsigned int low_pwm_aod = 0;
+	struct dsi_display *display = oplus_display_get_current_display();
+	struct oplus_ofp_params *p_oplus_ofp_params = oplus_ofp_get_params(oplus_ofp_display_id);
+
+	OFP_DEBUG("start\n");
+
+	if (!oplus_ofp_is_supported()) {
+		OFP_DEBUG("no need to set low pwm aod mode\n");
+		return count;
+	}
+
+	if (!buf || !display || !p_oplus_ofp_params) {
+		OFP_ERR("Invalid params\n");
+		return count;
+	}
+
+	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_set_low_pwm_aod_mode_attr");
+
+	sscanf(buf, "%d", &low_pwm_aod);
+
+	if (low_pwm_aod) {
+		p_oplus_ofp_params->low_pwm_aod_mode = true;
+	} else {
+		p_oplus_ofp_params->low_pwm_aod_mode = false;
+	}
+	OFP_INFO("low_pwm_aod_mode:%d\n", p_oplus_ofp_params->low_pwm_aod_mode);
+	OPLUS_OFP_TRACE_INT("low_pwm_aod_mode", p_oplus_ofp_params->low_pwm_aod_mode);
+	if (p_oplus_ofp_params->low_pwm_aod_mode) {
+		OFP_DEBUG("low_pwm_aod_mode is true\n");
+		rc = oplus_ofp_display_cmd_set(display, DSI_CMD_SET_SWITCH_LOW_PWM_AOD_ON);
+        if (rc) {
+            OFP_ERR("[%s] failed to send DSI_CMD_SET_SWITCH_LOW_PWM_AOD_ON cmds, rc=%d\n", display->name, rc);
+        }
+	} else {
+		rc = oplus_ofp_display_cmd_set(display, DSI_CMD_SET_SWITCH_LOW_PWM_AOD_OFF);
+        if (rc) {
+            OFP_ERR("[%s] failed to send DSI_CMD_SET_SWITCH_LOW_PWM_AOD_OFF cmds, rc=%d\n", display->name, rc);
+        }
+	}
+
+	OPLUS_OFP_TRACE_END("oplus_ofp_set_low_pwm_aod_mode_attr");
+
+	OFP_DEBUG("end\n");
+
+	return count;
+}

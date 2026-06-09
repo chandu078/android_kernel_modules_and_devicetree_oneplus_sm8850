@@ -148,6 +148,9 @@ void tdls_discovery_timeout_peer_cb(void *user_data)
 			goto update_link_status_and_unforce;
 		}
 
+		tdls_debug("Choose vdev %d as tdls vdev",
+			   wlan_vdev_get_id(select_vdev));
+
 		tdls_vdev = wlan_vdev_get_tdls_vdev_obj(select_vdev);
 		if (!tdls_vdev)
 			return;
@@ -1368,6 +1371,12 @@ int tdls_set_tdls_offchannelmode(struct wlan_objmgr_vdev *vdev,
 	if (wlan_vdev_is_up(vdev) != QDF_STATUS_SUCCESS) {
 		tdls_err("vdev:%d tdls off channel req in not associated state %d",
 			 wlan_vdev_get_id(vdev), offchanmode);
+		return -EPERM;
+	}
+
+	if (offchanmode == ENABLE_CHANSWITCH &&
+	    !tdls_check_if_offchannel_allowed(vdev)) {
+		tdls_err("TDLS Offchannel is not allowed");
 		return -EPERM;
 	}
 

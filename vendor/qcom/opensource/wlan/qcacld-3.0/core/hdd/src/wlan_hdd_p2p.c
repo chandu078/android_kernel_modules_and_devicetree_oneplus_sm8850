@@ -204,8 +204,14 @@ static int __wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 
 	wlan_hdd_lpc_handle_concurrency(hdd_ctx, false);
 	if (policy_mgr_is_sta_mon_concurrency(psoc) &&
-	    !hdd_lpc_is_work_scheduled(hdd_ctx))
+	    !hdd_lpc_is_work_scheduled(hdd_ctx)) {
 		return -EINVAL;
+	} else if (policy_mgr_mode_specific_connection_count(hdd_ctx->psoc,
+							     PM_PASSTHRU_MODE,
+							     NULL)) {
+		hdd_err("Passthru mode active - rejecting roc req");
+		return -EINVAL;
+	}
 
 	if (adapter->device_mode == QDF_P2P_DEVICE_MODE &&
 	    ucfg_p2p_is_sta_vdev_usage_allowed_for_p2p_dev(psoc)) {
@@ -1689,6 +1695,42 @@ wlan_hdd_p2p_is_wfd_r2_twt_enable(struct hdd_adapter *adapter,
 }
 #endif
 
+#ifdef FEATURE_WLAN_SUPPORT_PCC
+/**
+ * wlan_hdd_p2p_is_pcc_twt_enable() - This function checks TWT enable for
+ * PCC mode or not
+ * @adapter: pointer to adapter
+ * @psoc: pointer to PSOC object
+ * @vdev_id: VDEV ID
+ *
+ * Return: true if P2P is in PCC mode and TWT is enable otherwise false
+ */
+static bool wlan_hdd_p2p_is_pcc_twt_enable(struct hdd_adapter *adapter,
+					   struct wlan_objmgr_psoc *psoc,
+					   uint8_t vdev_id)
+{
+	uint8_t twt_resp_cfg;
+
+	if (!wlan_vdev_p2p_is_pcc_mode(psoc, vdev_id))
+		return false;
+
+	ucfg_twt_cfg_get_responder(psoc, &twt_resp_cfg);
+	if (!ucfg_twt_resp_check_bit(psoc, vdev_id, QDF_P2P_GO_MODE,
+				     twt_resp_cfg))
+		return false;
+
+	return true;
+}
+#else
+static inline bool
+wlan_hdd_p2p_is_pcc_twt_enable(struct hdd_adapter *adapter,
+			       struct wlan_objmgr_psoc *psoc,
+			       uint8_t vdev_id)
+{
+	return false;
+}
+#endif
+
 #ifdef WLAN_SUPPORT_TWT
 /**
  * wlan_hdd_p2p_disable_twt() - disable TWT for provided VDEV ID
@@ -1760,6 +1802,12 @@ int wlan_hdd_set_power_save(struct hdd_adapter *adapter,
 
 	status = ucfg_p2p_set_ps(psoc, ps_config);
 	hdd_debug("p2p set power save, status:%d", status);
+
+	if (wlan_hdd_p2p_is_pcc_twt_enable(adapter, psoc,
+					   ps_config->vdev_id)) {
+		hdd_debug("PCC mode enabled");
+		return 0;
+	}
 
 	/* P2P-GO-NOA and TWT do not go hand in hand */
 	if (ps_config->duration)

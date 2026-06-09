@@ -734,6 +734,7 @@ struct sir_set_antenna_mode {
  * @eSIR_AUTO_MODE: Auto role
  * @eSIR_MONITOR_MODE: Monitor mode
  * @eSIR_NDI_MODE: NAN datapath mode
+ * @eSIR_PASSTHRU_MODE: Passthrough mode
  */
 enum bss_type {
 	eSIR_INFRASTRUCTURE_MODE,
@@ -741,6 +742,7 @@ enum bss_type {
 	eSIR_AUTO_MODE,
 	eSIR_MONITOR_MODE,
 	eSIR_NDI_MODE,
+	eSIR_PASSTHRU_MODE,
 	eSIR_DONOT_USE_BSS_TYPE = SIR_MAX_ENUM_SIZE
 };
 
@@ -2115,6 +2117,7 @@ typedef struct sSirScanOffloadEvent {
  * @half_rate: is the channel operating at 10MHz
  * @quarter_rate: is the channel operating at 5MHz
  * @nan_disabled: is NAN disabled on @freq
+ * @is_passive: is indoor frequency
  */
 typedef struct sSirUpdateChanParam {
 	uint32_t freq;
@@ -2123,6 +2126,7 @@ typedef struct sSirUpdateChanParam {
 	bool half_rate;
 	bool quarter_rate;
 	bool nan_disabled;
+	bool is_passive;
 } tSirUpdateChanParam, *tpSirUpdateChanParam;
 
 typedef struct sSirUpdateChan {

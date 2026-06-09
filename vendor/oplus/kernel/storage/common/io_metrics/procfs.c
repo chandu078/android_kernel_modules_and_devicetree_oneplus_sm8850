@@ -97,6 +97,27 @@ static const OPS_TYPE ioLatencyStat_proc_fops = {
     LSEEK_MEMBER   = seq_lseek,
     RELEASE_MEMBER = single_release,
 };
+
+static const OPS_TYPE io_dist_stats_500ms_proc_fops = {
+    OPEN_MEMBER    = io_dist_stats_500ms_proc_open,
+    READ_MEMBER    = seq_read,
+    LSEEK_MEMBER   = seq_lseek,
+    RELEASE_MEMBER = single_release,
+};
+
+static const OPS_TYPE io_dist_stats_2s_proc_fops = {
+    OPEN_MEMBER    = io_dist_stats_2s_proc_open,
+    READ_MEMBER    = seq_read,
+    LSEEK_MEMBER   = seq_lseek,
+    RELEASE_MEMBER = single_release,
+};
+
+static const OPS_TYPE io_dist_stats_5s_proc_fops = {
+    OPEN_MEMBER    = io_dist_stats_5s_proc_open,
+    READ_MEMBER    = seq_read,
+    LSEEK_MEMBER   = seq_lseek,
+    RELEASE_MEMBER = single_release,
+};
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
 
 static int enable_show(struct seq_file *seq_filp, void *data)
@@ -674,6 +695,12 @@ int io_metrics_procfs_init(void)
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
     ioLatencyStat_procfs = proc_create_data("ioLatencyStat", S_IRUGO, io_metrics_procfs,
         &ioLatencyStat_proc_fops, NULL);
+    proc_create_data("io_dist_stats_500ms", S_IRUGO, io_metrics_procfs,
+        &io_dist_stats_500ms_proc_fops, NULL);
+    proc_create_data("io_dist_stats_2s", S_IRUGO, io_metrics_procfs,
+        &io_dist_stats_2s_proc_fops, NULL);
+    proc_create_data("io_dist_stats_5s", S_IRUGO, io_metrics_procfs,
+        &io_dist_stats_5s_proc_fops, NULL);
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
 
     // Create all nodes

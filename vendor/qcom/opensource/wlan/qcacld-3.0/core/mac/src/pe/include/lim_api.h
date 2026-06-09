@@ -57,6 +57,8 @@
 #define LIM_IS_P2P_DEVICE_GO(pe_session)     (GET_LIM_SYSTEM_ROLE(pe_session) == eLIM_P2P_DEVICE_GO)
 #define LIM_IS_NDI_ROLE(pe_session) \
 		(GET_LIM_SYSTEM_ROLE(pe_session) == eLIM_NDI_ROLE)
+#define LIM_IS_PASSTHRU_ROLE(pe_session) \
+		(GET_LIM_SYSTEM_ROLE(pe_session) == eLIM_PASSTHRU_ROLE)
 /* gLimSmeState */
 #define GET_LIM_SME_STATE(mac)                 (mac->lim.gLimSmeState)
 #define SET_LIM_SME_STATE(mac, state)          (mac->lim.gLimSmeState = state)
@@ -707,28 +709,6 @@ lim_fill_pe_session(struct mac_context *mac_ctx,
 		    enum wlan_status_code *req_fail_status_code);
 
 /**
- * lim_update_omn_ie_ch_width() - update omn_ie_ch_width in struct
- * assoc_channel_info while processing bcn/probe resp/assoc resp/re-assoc resp
- * @vdev: VDEV object manager
- * @ch_width: ch_width present in OMN IE
- *
- * Return: none
- */
-void lim_update_omn_ie_ch_width(struct wlan_objmgr_vdev *vdev,
-				enum phy_ch_width ch_width);
-
-/**
- * lim_update_bcn_op_ch_width() - update beacon channel width in struct
- * assoc_channel_info while processing bcn/probe resp
- * @vdev: VDEV object manager
- * @ch_width: ch_width present in beacon eht/he/vht op IE and ht info IE
- *
- * Return: none
- */
-void lim_update_bcn_op_ch_width(struct wlan_objmgr_vdev *vdev,
-				enum phy_ch_width ch_width);
-
-/**
  * lim_is_he_dynamic_smps_enabled() - Check if Dynamic SMPS enabled in HE caps
  * @session: PE session
  *
@@ -1124,6 +1104,57 @@ QDF_STATUS lim_ll_sap_notify_chan_switch_started(struct wlan_objmgr_vdev *vdev)
 #endif
 
 /**
+ * lim_cfg_dsmps_for_iot_ap() - Configure dynamic SMPS for IOT AP
+ * @mac_ctx: mac context
+ * @session: pe session
+ * @bss_desc: bss descriptor
+ * @is_roaming: is roaming
+ *
+ * Configure DSMPS based on allowlist and denylist.
+ *
+ * Configuration Priority:
+ * - If allowlist is configured (non-empty), use allowlist logic
+ * - If allowlist is not configured (empty), use denylist logic
+ *
+ * Allowlist Solution:
+ * ==================
+ * Initial Connection:
+ *   1. AP not in allowlist:
+ *      - Send VDEV param 0x0 to disable DSMPS
+ *
+ *   2. AP in allowlist AND in vendor RSSI OUI list:
+ *      - Send VDEV param DSMPS_EN | DSMPS_BASE_ON_RSSI_EN to enable DSMPS with
+ *      - RSSI-based control
+ *
+ *   3. AP in allowlist AND NOT in vendor RSSI OUI list:
+ *      - Send VDEV param DSMPS_EN to enable DSMPS without RSSI-based control
+ *
+ * Roaming:
+ *   - Always send VDEV param 0x0 to disable DSMPS after roaming
+ *     (regardless of AP's presence in allowlist or RSSI OUI list)
+ *
+ * Denylist Solution:
+ * ==================
+ * Initial Connection or Roaming:
+ *   1. AP in denylist:
+ *      - Send VDEV param 0x0 to disable DSMPS
+ *
+ *   2. AP not in denylist AND in vendor RSSI OUI list:
+ *      - Send VDEV param DSMPS_EN | DSMPS_BASE_ON_RSSI_EN to enable DSMPS with
+ *      - RSSI-based control
+ *
+ *   3. AP not in denylist AND NOT in vendor RSSI OUI list:
+ *      - Send VDEV param DSMPS_EN to enable DSMPS without RSSI-based control
+ *
+ * Return: None
+ */
+void
+lim_cfg_dsmps_for_iot_ap(struct mac_context *mac_ctx,
+			 struct pe_session *session,
+			 struct bss_description *bss_desc,
+			 bool is_roaming);
+
+/**
  * lim_set_amsdu_for_2g_oui() - Set amsdu for 2 GHz IOT AP
  * @mac_ctx: mac context
  * @session: pe session
@@ -1134,6 +1165,46 @@ QDF_STATUS lim_ll_sap_notify_chan_switch_started(struct wlan_objmgr_vdev *vdev)
  * Return: None
  */
 void lim_set_amsdu_for_2g_oui(struct mac_context *mac_ctx,
-	struct pe_session *session,
-	struct bss_description *bss_desc);
+			      struct pe_session *session,
+			      struct bss_description *bss_desc);
+
+#ifdef DRIVER_PASSTHRU_MODE
+/**
+ * lim_passthrough_init_session() - Initialize PE session for passthrough mode
+ * @mac_ptr: Pointer to global MAC context
+ * @msg: Pointer to session creation message containing BSSID and vdev ID
+ *
+ * This function creates a new PE session for passthrough mode operation.
+ *
+ * Return: None
+ */
+void lim_passthrough_init_session(struct mac_context *mac_ptr,
+				  struct sir_create_session *msg);
+
+/**
+ * lim_passthrough_deinit_session() - Delete PE session for passthrough mode
+ * @mac_ptr: Pointer to global MAC context
+ * @msg: Pointer to session deletion message containing vdev ID
+ *
+ * This function deletes an existing PE session that was created for
+ * passthrough mode operation. It triggers the VDEV state machine to
+ * transition to DOWN state and then removes the session from PE.
+ *
+ * Return: None
+ */
+void lim_passthrough_deinit_session(struct mac_context *mac_ptr,
+				    struct sir_delete_session *msg);
+#else
+static inline
+void lim_passthrough_init_session(struct mac_context *mac_ptr,
+				  struct sir_create_session *msg)
+{
+}
+
+static inline
+void lim_passthrough_deinit_session(struct mac_context *mac_ptr,
+				    struct sir_delete_session *msg)
+{
+}
+#endif
 #endif /* __LIM_API_H */

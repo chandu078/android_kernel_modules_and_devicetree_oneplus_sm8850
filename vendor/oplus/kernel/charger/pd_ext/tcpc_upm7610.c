@@ -1184,6 +1184,7 @@ static int upm7610_tcpcdev_init(struct upm7610_chip *chip, struct device *dev)
 		case TYPEC_RP_1_5:
 		case TYPEC_RP_3_0:
 			desc->rp_lvl = val;
+			break;
 		default:
 			break;
 		}

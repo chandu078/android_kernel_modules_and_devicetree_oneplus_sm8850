@@ -1222,6 +1222,38 @@ void oplus_sde_evtlog_dump_all(void)
 	mutex_unlock(&dbg_base->mutex);
 	pr_err("oplus_sde_evtlog_dump_all end\n");
 }
+
+void oplus_sde_evtlog_dump_limited(u32 max_entries)
+{
+	struct sde_dbg_base *dbg_base = &sde_dbg_base;
+	char buf[SDE_EVTLOG_BUF_MAX];
+	bool update_last_entry = true;
+	u32 i;
+
+	pr_info("oplus_sde_evtlog_dump_limited entry, max_entries=%u\n", max_entries);
+	SDE_EVT32(0x11, 0x22, max_entries);
+
+	mutex_lock(&dbg_base->mutex);
+
+	if (!sde_evtlog_is_enabled(dbg_base->evtlog, SDE_EVTLOG_ALWAYS))
+		goto out;
+
+	dbg_base->evtlog->oplus_print_limit = max_entries;
+
+	for (i = 0; i < max_entries; i++) {
+		if (!sde_evtlog_dump_to_buffer(dbg_base->evtlog, buf,
+				SDE_EVTLOG_BUF_MAX, update_last_entry, false))
+			break;
+		pr_info("%s", buf);
+		update_last_entry = false;
+	}
+
+	dbg_base->evtlog->oplus_print_limit = 0;
+
+out:
+	mutex_unlock(&dbg_base->mutex);
+	pr_info("oplus_sde_evtlog_dump_limited end\n");
+}
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 void sde_dbg_dbg_dump(bool do_panic, const char *name, bool dump_secure, u64 dump_blk_mask)

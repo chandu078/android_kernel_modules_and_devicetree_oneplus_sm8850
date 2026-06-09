@@ -1671,7 +1671,7 @@
 
 &dsi_panel_AC306_S_3_A0020_dsc_cmd {
 	/* adfr config */
-	oplus,adfr-config = <0x1>;  // 0b0000'0000'0000'0001
+	oplus,adfr-config = <0x4001>;  // 0b0100'0000'0000'0001
 	oplus,adfr-test-te-gpio = <&tlmm 88 0>;
 	/* just for qsync enable*/
 	qcom,qsync-enable;

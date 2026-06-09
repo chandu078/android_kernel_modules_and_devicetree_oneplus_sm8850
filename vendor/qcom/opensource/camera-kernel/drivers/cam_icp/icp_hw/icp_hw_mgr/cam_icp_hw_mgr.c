@@ -46,6 +46,9 @@
 #include "cam_mem_mgr_api.h"
 #include "cam_presil_hw_access.h"
 #include "cam_icp_proc.h"
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#include "cam_kevent_fb_custom.h"
+#endif
 
 #define ICP_WORKQ_TASK_CMD_TYPE 1
 #define ICP_WORKQ_TASK_MSG_TYPE 2
@@ -6181,6 +6184,10 @@ static int cam_icp_mgr_send_config_io(struct cam_icp_hw_ctx_data *ctx_data,
 			"%s: FW response timeout for send IO cfg handle command on",
 			ctx_data->ctx_id_string);
 	if (!rem_jiffies) {
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		char fb_payload[PAYLOAD_LENGTH] = {0};
+		KEVENT_FB_FRAME_ERROR(fb_payload, "FW response timeout", ctx_data->ctx_id);
+#endif
 		/* send specific error for io config failure */
 		rc = -EREMOTEIO;
 		cam_icp_dump_debug_info(hw_mgr, false);

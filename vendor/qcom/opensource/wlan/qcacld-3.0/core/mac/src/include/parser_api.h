@@ -407,6 +407,7 @@ typedef struct sSirAssocReq {
 	struct wlan_mlo_eml_cap eml_info;
 	struct wlan_mlo_mld_cap mld_info;
 	uint8_t mld_mac[QDF_MAC_ADDR_SIZE];
+	uint8_t rsno_gen;
 #ifdef WLAN_FEATURE_FILS_SK_SAP
 	tDot11fIEfils_session fils_session;
 	tDot11fIEfils_key_confirmation fils_key_auth;
@@ -1272,7 +1273,7 @@ populate_dot11f_ext_cap(struct mac_context *mac, bool isVHTEnabled,
 void populate_dot11f_qcn_ie(struct mac_context *mac,
 			    struct pe_session *pe_session,
 			    tDot11fIEqcn_ie *qcn_ie,
-			    uint8_t attr_id);
+			    uint8_t attr_id, enum mgmt_frame_type);
 
 void populate_dot11f_bss_max_idle(struct mac_context *mac,
 				  struct pe_session *session,

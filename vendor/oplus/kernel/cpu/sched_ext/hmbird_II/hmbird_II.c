@@ -166,6 +166,27 @@ static void android_vh_scx_enabled(void *unused, int enabled)
 	sw_update(1, enabled ? HMBIRD_ENABLED : HMBIRD_DISABLED, HMBIRD_SWITCH_NORMAL);
 }
 
+#ifdef CONFIG_OPLUS_SYSTEM_KERNEL_QCOM
+static inline bool move_entity(unsigned int flags)
+{
+	if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) == DEQUEUE_SAVE)
+		return false;
+	return true;
+}
+
+static void android_vh_scx_restore_flags(void *unused, const struct sched_class *prev,
+										 const struct sched_class *next, int *flags)
+{
+	if (!move_entity(*flags)) {
+		if ((prev == addr_rt_sched_class) && (next == &ext_sched_class)) {
+			*flags |= DEQUEUE_MOVE;
+		} else if ((prev == &ext_sched_class) && (next == addr_rt_sched_class)) {
+			*flags |= DEQUEUE_MOVE;
+		}
+	}
+}
+#endif
+
 static void android_vh_task_should_scx(void *unused, int *should_scx, int policy, int prio)
 {
 	if (hmbird_enable != HMBIRD_II_SCENE)
@@ -491,6 +512,9 @@ int hmbird_II_init(void)
 	register_trace_android_vh_dup_task_struct(android_vh_dup_task_struct_handler, NULL);
 	register_trace_android_vh_scx_task_switch_finish(trace_task_change_cpumask, NULL);
 	register_trace_android_vh_scx_set_cpus_allowed(trace_set_cpus_allowed_common, NULL);
+#ifdef CONFIG_OPLUS_SYSTEM_KERNEL_QCOM
+	register_trace_android_vh_scx_restore_flags(android_vh_scx_restore_flags, NULL);
+#endif
 	return 0;
 }
 

@@ -17,18 +17,146 @@
     atomic64_t ufs_metrics_lat_##op[LAT_500M_TO_MAX + 1] __cacheline_aligned = {0};
 
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-#define TEN_SECOND_SIZE 10
-#define ONE_SECOND_STATS_SIZE 5
-atomic64_t last_sec_record;
+/* Common latency range definitions */
+#define LATENCY_DIST_SIZE 5        /* 5 latency ranges: 0-2ms, 2-20ms, 20-100ms, 100-500ms, >500ms */
 
-struct {
-    atomic64_t one_sec_read_dist[ONE_SECOND_STATS_SIZE];
-    atomic64_t one_sec_write_dist[ONE_SECOND_STATS_SIZE];
-    atomic64_t one_sec_read_sz[ONE_SECOND_STATS_SIZE];
-    atomic64_t one_sec_write_sz[ONE_SECOND_STATS_SIZE];
-    atomic64_t clear_flag;
+/* Latency thresholds in nanoseconds */
+#define LAT_THRESHOLD_2MS   (2ULL * 1000 * 1000)
+#define LAT_THRESHOLD_20MS  (20ULL * 1000 * 1000)
+#define LAT_THRESHOLD_100MS (100ULL * 1000 * 1000)
+#define LAT_THRESHOLD_500MS (500ULL * 1000 * 1000)
+
+/* Time unit definition */
+#define NS_PER_100MS (100ULL * 1000 * 1000)
+
+/*
+ * Circular buffer IO latency metrics slot structure
+ * Each slot records statistics for one time unit and uses epoch to track validity
+ */
+struct io_latency_slot {
+    atomic64_t read_dist[LATENCY_DIST_SIZE];
+    atomic64_t write_dist[LATENCY_DIST_SIZE];
+    atomic64_t read_sz[LATENCY_DIST_SIZE];
+    atomic64_t write_sz[LATENCY_DIST_SIZE];
+    atomic64_t epoch;      /* Epoch number to track data validity in circular buffer */
     char padding[48];
-} one_sec_ufs_metrics[TEN_SECOND_SIZE];
+};
+
+/* 100ms granularity: 10 seconds circular buffer (100 slots)
+ * This unified buffer serves both fine-grained (100ms) and coarse-grained (1s) statistics
+ * by aggregating different numbers of slots during read operations.
+ */
+#define TEN_SECOND_100MS_SIZE 100  /* 10 seconds = 100 * 100ms slots */
+struct io_latency_slot per_100ms_ufs_metrics[TEN_SECOND_100MS_SIZE] __cacheline_aligned;
+
+/**
+ * get_latency_index - Determine the latency range index
+ * @elapsed_ns: IO latency in nanoseconds
+ *
+ * Returns: Index 0-4 for the corresponding latency range
+ *   [0]: 0 ~ 2ms
+ *   [1]: 2ms ~ 20ms
+ *   [2]: 20ms ~ 100ms
+ *   [3]: 100ms ~ 500ms
+ *   [4]: > 500ms
+ */
+static inline int get_latency_index(ktime_t elapsed_ns)
+{
+    if (elapsed_ns <= LAT_THRESHOLD_2MS)
+        return 0;
+    if (elapsed_ns <= LAT_THRESHOLD_20MS)
+        return 1;
+    if (elapsed_ns <= LAT_THRESHOLD_100MS)
+        return 2;
+    if (elapsed_ns <= LAT_THRESHOLD_500MS)
+        return 3;
+    return 4;
+}
+
+/**
+ * clear_latency_slot - Clear a latency slot's data
+ * @slot: Pointer to the io_latency_slot to clear
+ */
+static inline void clear_latency_slot(struct io_latency_slot *slot)
+{
+    int i;
+    for (i = 0; i < LATENCY_DIST_SIZE; i++) {
+        atomic64_set(&slot->read_dist[i], 0);
+        atomic64_set(&slot->write_dist[i], 0);
+        atomic64_set(&slot->read_sz[i], 0);
+        atomic64_set(&slot->write_sz[i], 0);
+    }
+}
+
+/**
+ * fill_latency_slot_circular - Record IO latency into a circular buffer slot
+ * @slot: Pointer to the io_latency_slot
+ * @current_epoch: Current epoch number for this slot
+ * @elapsed_ns: IO latency in nanoseconds
+ * @size: IO transfer size in bytes
+ * @is_read: true for read, false for write
+ *
+ * This function handles circular buffer logic:
+ * - If the slot's epoch differs from current_epoch, clear and update epoch
+ * - Otherwise, accumulate statistics into the existing slot
+ */
+static inline void fill_latency_slot_circular(struct io_latency_slot *slot,
+                                              u64 current_epoch,
+                                              ktime_t elapsed_ns, u64 size, bool is_read)
+{
+    int lat_idx = get_latency_index(elapsed_ns);
+    u64 slot_epoch;
+
+    /* Atomically check and update epoch to avoid race condition */
+    slot_epoch = atomic64_read(&slot->epoch);
+    if (slot_epoch != current_epoch) {
+        /* Use cmpxchg to atomically update epoch, only one thread will succeed */
+        if (atomic64_cmpxchg(&slot->epoch, slot_epoch, current_epoch) == slot_epoch) {
+            /* Only the thread that successfully updated epoch clears the slot */
+            clear_latency_slot(slot);
+        }
+        /* Other threads skip clear and directly update stats */
+    }
+
+    /* Update statistics */
+    if (is_read) {
+        atomic64_inc(&slot->read_dist[lat_idx]);
+        atomic64_add(size, &slot->read_sz[lat_idx]);
+    } else {
+        atomic64_inc(&slot->write_dist[lat_idx]);
+        atomic64_add(size, &slot->write_sz[lat_idx]);
+    }
+}
+
+/**
+ * update_iolatency_stats - Update 100ms granularity IO latency statistics
+ * @current_time_ns: Current timestamp in nanoseconds
+ * @elapsed_ns: IO latency in nanoseconds
+ * @size: IO transfer size in bytes
+ * @is_read: true for read, false for write
+ *
+ * Uses circular buffer with epoch-based validity tracking:
+ * - slot_index = (time / time_unit) % buffer_size
+ * - epoch = (time / time_unit) / buffer_size
+ *
+ * The unified 100ms buffer (100 slots = 10 seconds) can serve both
+ * fine-grained and coarse-grained statistics by aggregating different
+ * numbers of slots during read operations.
+ */
+static void update_iolatency_stats(u64 current_time_ns, ktime_t elapsed_ns,
+                                   u64 size, bool is_read)
+{
+    u64 time_unit_100ms;
+    int slot_idx_100ms;
+    u64 epoch_100ms;
+
+    /* 100ms granularity circular buffer */
+    time_unit_100ms = current_time_ns / NS_PER_100MS;
+    slot_idx_100ms = time_unit_100ms % TEN_SECOND_100MS_SIZE;
+    epoch_100ms = time_unit_100ms / TEN_SECOND_100MS_SIZE;
+    fill_latency_slot_circular(&per_100ms_ufs_metrics[slot_idx_100ms],
+                               epoch_100ms, elapsed_ns, size, is_read);
+}
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
 
 UFS_METRICS_LAT(write);
@@ -135,75 +263,11 @@ static int get_metric_value(struct seq_file *seq, const char *metric_name)
     return -EINVAL;
 }
 
-#ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-void fill_one_sec_ufs_metrics(int index, ktime_t elapsed_in_ufs, u64 size, bool rw) {
-    if (index < 0 || index > 9) {
-        io_metrics_print("fill_one_sec_ufs_metrics index out of memory index:%d\n", index);
-        return;
-    }
-    if(atomic64_read(&one_sec_ufs_metrics[index].clear_flag) == 0) {
-        atomic64_set(&one_sec_ufs_metrics[index].clear_flag, 1);
-        for (int i = 0; i < ONE_SECOND_STATS_SIZE; i++) {
-            atomic64_set(&one_sec_ufs_metrics[index].one_sec_read_dist[i], 0);
-            atomic64_set(&one_sec_ufs_metrics[index].one_sec_write_dist[i], 0);
-            atomic64_set(&one_sec_ufs_metrics[index].one_sec_read_sz[i], 0);
-            atomic64_set(&one_sec_ufs_metrics[index].one_sec_write_sz[i], 0);
-        }
-    }
-    if (elapsed_in_ufs >= 0 && elapsed_in_ufs <= 2 * 1000 * 1000) {
-        if (rw) {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_read_dist[0]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_read_sz[0]);
-        } else {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_write_dist[0]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_write_sz[0]);
-        }
-    } else if (elapsed_in_ufs > 2 * 1000 * 1000 && elapsed_in_ufs <= 20 * 1000 * 1000) {
-        if (rw) {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_read_dist[1]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_read_sz[1]);
-        } else {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_write_dist[1]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_write_sz[1]);
-        }
-    } else if (elapsed_in_ufs > 20 * 1000 * 1000 && elapsed_in_ufs <= 100 * 1000 * 1000) {
-        if (rw) {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_read_dist[2]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_read_sz[2]);
-        } else {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_write_dist[2]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_write_sz[2]);
-        }
-    } else if (elapsed_in_ufs > 100 * 1000 * 1000 && elapsed_in_ufs <= 500 * 1000 * 1000) {
-        if (rw) {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_read_dist[3]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_read_sz[3]);
-        } else {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_write_dist[3]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_write_sz[3]);
-        }
-    } else if (elapsed_in_ufs > 500 * 1000 * 1000) {
-        if (rw) {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_read_dist[4]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_read_sz[4]);
-        } else {
-            atomic64_add(1, &one_sec_ufs_metrics[index].one_sec_write_dist[4]);
-            atomic64_add(size, &one_sec_ufs_metrics[index].one_sec_write_sz[4]);
-        }
-    }
-
-}
-#endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
-
 /* Generic function: Update UFS statistics */
 static void update_ufs_metrics(bool is_read, int transfer_len, ktime_t elapsed_in_ufs)
 {
     u64 ufs_lat_range = 0;
-    // Do not update statistics when metrics are disabled
-    if (unlikely(!io_metrics_enabled))
-        return;
 
-    /* Directly accumulate statistics */
     if (is_read) {
         atomic64_inc(&ufs_metrics.read_cnt);
         atomic64_add(transfer_len, &ufs_metrics.read_size);
@@ -214,7 +278,6 @@ static void update_ufs_metrics(bool is_read, int transfer_len, ktime_t elapsed_i
         atomic64_add(elapsed_in_ufs, &ufs_metrics.write_elapse);
     }
 
-    /* Update latency distribution */
     lat_range_check(elapsed_in_ufs, ufs_lat_range);
     if (is_read) {
         atomic64_inc(&ufs_metrics_lat_read[ufs_lat_range]);
@@ -245,16 +308,7 @@ void cb_android_vh_ufs_compl_command(void *ignore, struct ufs_hba *hba,
         {
             transfer_len = be32_to_cpu(lrbp->ucd_req_ptr->sc.exp_data_transfer_len);
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-            u64 current_time_ns = lrbp->compl_time_stamp;
-            u64 elapse_s = (current_time_ns - atomic64_read(&last_sec_record)) / (1 * 1000 * 1000 * 1000);
-            if (elapse_s >= 10) {
-                atomic64_set(&last_sec_record, current_time_ns);
-                for (int i = 0; i < TEN_SECOND_SIZE; i++) {
-                    atomic64_set(&one_sec_ufs_metrics[i].clear_flag, 0);
-                }
-                elapse_s = 0;
-            }
-            fill_one_sec_ufs_metrics(elapse_s, elapsed_in_ufs, transfer_len, true);
+            update_iolatency_stats(lrbp->compl_time_stamp, elapsed_in_ufs, transfer_len, true);
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
             update_ufs_metrics(true, transfer_len, elapsed_in_ufs);
             if (unlikely(ufs_compl_command_enabled || io_metrics_debug_enabled)) {
@@ -269,16 +323,7 @@ void cb_android_vh_ufs_compl_command(void *ignore, struct ufs_hba *hba,
         {
             transfer_len = be32_to_cpu(lrbp->ucd_req_ptr->sc.exp_data_transfer_len);
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-            u64 current_time_ns = lrbp->compl_time_stamp;
-            u64 elapse_s = (current_time_ns - atomic64_read(&last_sec_record)) / (1 * 1000 * 1000 * 1000);
-            if (elapse_s >= 10) {
-                atomic64_set(&last_sec_record, current_time_ns);
-                for (int i = 0; i < TEN_SECOND_SIZE; i++) {
-                    atomic64_set(&one_sec_ufs_metrics[i].clear_flag, 0);
-                }
-                elapse_s = 0;
-            }
-            fill_one_sec_ufs_metrics(elapse_s, elapsed_in_ufs, transfer_len, false);
+            update_iolatency_stats(lrbp->compl_time_stamp, elapsed_in_ufs, transfer_len, false);
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
             update_ufs_metrics(false, transfer_len, elapsed_in_ufs);
             if (unlikely(ufs_compl_command_enabled || io_metrics_debug_enabled)) {
@@ -347,74 +392,201 @@ static int ufs_metrics_proc_show(struct seq_file *seq_filp, void *data)
 #endif
 }
 
-#ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-static unsigned long long get_one_sec_dist(int index, bool rw)
-{
-    unsigned long long sum = 0;
-    for (int i = 0; i < TEN_SECOND_SIZE; i++) {
-        sum += rw ? atomic64_read(&one_sec_ufs_metrics[i].one_sec_read_dist[index]) : \
-                atomic64_read(&one_sec_ufs_metrics[i].one_sec_write_dist[index]);
-    }
-    return sum;
-}
-
-static unsigned long long get_one_sec_size(int index, bool rw)
-{
-    unsigned long long sum = 0;
-    for (int i = 0; i < TEN_SECOND_SIZE; i++) {
-        sum += rw ? atomic64_read(&one_sec_ufs_metrics[i].one_sec_read_sz[index]) : \
-                atomic64_read(&one_sec_ufs_metrics[i].one_sec_write_sz[index]);
-    }
-    return sum / (1024 * 1024);
-}
-
-
-static int ioLatencyStat_show(struct seq_file *seq_filp, void *data)
-{
-
-    seq_printf(seq_filp, "%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu \
-                        \n%llu, %llu",
-                        get_one_sec_dist(0, true),
-                        get_one_sec_size(0, true),
-                        get_one_sec_dist(1, true),
-                        get_one_sec_size(1, true),
-                        get_one_sec_dist(2, true),
-                        get_one_sec_size(2, true),
-                        get_one_sec_dist(3, true),
-                        get_one_sec_size(3, true),
-                        get_one_sec_dist(4, true),
-                        get_one_sec_size(4, true),
-                        get_one_sec_dist(0, false),
-                        get_one_sec_size(0, false),
-                        get_one_sec_dist(1, false),
-                        get_one_sec_size(1, false),
-                        get_one_sec_dist(2, false),
-                        get_one_sec_size(2, false),
-                        get_one_sec_dist(3, false),
-                        get_one_sec_size(3, false),
-                        get_one_sec_dist(4, false),
-                        get_one_sec_size(4, false));
-    return 0;
-}
-#endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
-
 int ufs_metrics_proc_open(struct inode *inode, struct file *file)
 {
     return single_open(file, ufs_metrics_proc_show, file);
 }
 
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
+/**
+ * get_100ms_dist - Get accumulated IO count from 100ms circular buffer
+ * @lat_idx: Latency range index (0-4)
+ * @rw: true for read, false for write
+ * @window_count: Number of 100ms windows to accumulate
+ *
+ * Uses epoch-based validation to ensure only valid data is accumulated
+ * Returns: Accumulated IO count
+ */
+static unsigned long long get_100ms_dist(int lat_idx, bool rw, int window_count)
+{
+    unsigned long long sum = 0;
+    u64 current_time_ns = ktime_get_raw_ns();
+    u64 current_unit = current_time_ns / NS_PER_100MS;
+    u64 current_epoch = current_unit / TEN_SECOND_100MS_SIZE;
+    int current_slot_idx = current_unit % TEN_SECOND_100MS_SIZE;
+    int i;
+
+    if (lat_idx < 0 || lat_idx >= LATENCY_DIST_SIZE)
+        return 0;
+
+    if (window_count > TEN_SECOND_100MS_SIZE)
+        window_count = TEN_SECOND_100MS_SIZE;
+
+    /* Accumulate data from recent windows (going backwards from current) */
+    for (i = 0; i < window_count; i++) {
+        int slot_idx = current_slot_idx - i;
+        u64 expected_epoch = current_epoch;
+
+        if (slot_idx < 0) {
+            slot_idx += TEN_SECOND_100MS_SIZE;  /* Wrap around */
+            expected_epoch--;  /* Previous epoch for wrapped slots */
+        }
+
+        /* Skip slots with stale epoch */
+        if (atomic64_read(&per_100ms_ufs_metrics[slot_idx].epoch) != expected_epoch)
+            continue;
+
+        if (rw) {
+            sum += atomic64_read(&per_100ms_ufs_metrics[slot_idx].read_dist[lat_idx]);
+        } else {
+            sum += atomic64_read(&per_100ms_ufs_metrics[slot_idx].write_dist[lat_idx]);
+        }
+    }
+    return sum;
+}
+
+/**
+ * get_100ms_size - Get accumulated IO size from 100ms circular buffer
+ * @lat_idx: Latency range index (0-4)
+ * @rw: true for read, false for write
+ * @window_count: Number of 100ms windows to accumulate
+ *
+ * Uses epoch-based validation to ensure only valid data is accumulated
+ * Returns: Accumulated IO size in MB
+ */
+static unsigned long long get_100ms_size(int lat_idx, bool rw, int window_count)
+{
+    unsigned long long sum = 0;
+    u64 current_time_ns = ktime_get_raw_ns();
+    u64 current_unit = current_time_ns / NS_PER_100MS;
+    u64 current_epoch = current_unit / TEN_SECOND_100MS_SIZE;
+    int current_slot_idx = current_unit % TEN_SECOND_100MS_SIZE;
+    int i;
+
+    if (lat_idx < 0 || lat_idx >= LATENCY_DIST_SIZE)
+        return 0;
+
+    if (window_count > TEN_SECOND_100MS_SIZE)
+        window_count = TEN_SECOND_100MS_SIZE;
+
+    /* Accumulate data from recent windows (going backwards from current) */
+    for (i = 0; i < window_count; i++) {
+        int slot_idx = current_slot_idx - i;
+        u64 expected_epoch = current_epoch;
+
+        if (slot_idx < 0) {
+            slot_idx += TEN_SECOND_100MS_SIZE;  /* Wrap around */
+            expected_epoch--;  /* Previous epoch for wrapped slots */
+        }
+
+        /* Skip slots with stale epoch */
+        if (atomic64_read(&per_100ms_ufs_metrics[slot_idx].epoch) != expected_epoch)
+            continue;
+
+        if (rw) {
+            sum += atomic64_read(&per_100ms_ufs_metrics[slot_idx].read_sz[lat_idx]);
+        } else {
+            sum += atomic64_read(&per_100ms_ufs_metrics[slot_idx].write_sz[lat_idx]);
+        }
+    }
+    return sum / (1024 * 1024);  /* Convert to MB */
+}
+
+/**
+ * io_dist_stats_show - Show IO latency distribution statistics
+ * @seq_filp: seq_file pointer
+ * @window_count: Number of 100ms windows to accumulate
+ *
+ * Output format: 6 comma-separated values on a single line
+ *   Values 1-5: Read IO count for each latency range
+ *   Value 6: Total read IO size in MB
+ */
+static void io_dist_stats_show(struct seq_file *seq_filp, int window_count)
+{
+    int i;
+    unsigned long long total_size = 0;
+
+    /* Print read IO counts for each latency range */
+    for (i = 0; i < LATENCY_DIST_SIZE; i++) {
+        seq_printf(seq_filp, "%llu,", get_100ms_dist(i, true, window_count));
+        total_size += get_100ms_size(i, true, window_count);
+    }
+
+    /* Print total read IO size */
+    seq_printf(seq_filp, "%llu\n", total_size);
+}
+
+/* 500ms statistics: 5 windows */
+static int io_dist_stats_500ms_show(struct seq_file *seq_filp, void *data)
+{
+    io_dist_stats_show(seq_filp, 5);
+    return 0;
+}
+
+int io_dist_stats_500ms_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, io_dist_stats_500ms_show, file);
+}
+
+/* 2s statistics: 20 windows */
+static int io_dist_stats_2s_show(struct seq_file *seq_filp, void *data)
+{
+    io_dist_stats_show(seq_filp, 20);
+    return 0;
+}
+
+int io_dist_stats_2s_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, io_dist_stats_2s_show, file);
+}
+
+/* 5s statistics: 50 windows */
+static int io_dist_stats_5s_show(struct seq_file *seq_filp, void *data)
+{
+    io_dist_stats_show(seq_filp, 50);  /* 50 * 100ms = 5s */
+    return 0;
+}
+
+int io_dist_stats_5s_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, io_dist_stats_5s_show, file);
+}
+
+/**
+ * iolatencystatshow - Show IO latency statistics for 10 seconds window
+ * @seq_filp: seq_file pointer
+ * @data: unused
+ *
+ * This function replaces the old 1-second granularity implementation
+ * by aggregating all 100 slots (10 seconds) of 100ms granularity data.
+ * Output format: 10 lines, each line contains "count, size_mb"
+ *   Lines 1-5: Read statistics for latency ranges 0-4
+ *   Lines 6-10: Write statistics for latency ranges 0-4
+ */
+static int iolatencystatshow(struct seq_file *seq_filp, void *data)
+{
+    int i;
+
+    /* Read statistics */
+    for (i = 0; i < LATENCY_DIST_SIZE; i++) {
+        seq_printf(seq_filp, "%llu, %llu\n",
+                   get_100ms_dist(i, true, TEN_SECOND_100MS_SIZE),
+                   get_100ms_size(i, true, TEN_SECOND_100MS_SIZE));
+    }
+
+    /* Write statistics */
+    for (i = 0; i < LATENCY_DIST_SIZE; i++) {
+        seq_printf(seq_filp, "%llu, %llu\n",
+                   get_100ms_dist(i, false, TEN_SECOND_100MS_SIZE),
+                   get_100ms_size(i, false, TEN_SECOND_100MS_SIZE));
+    }
+
+    return 0;
+}
+
 int ioLatencyStat_proc_open(struct inode *inode, struct file *file)
 {
-    return single_open(file, ioLatencyStat_show, file);
+    return single_open(file, iolatencystatshow, file);
 }
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
 
@@ -439,6 +611,7 @@ void ufs_metrics_init(void)
 {
     ufs_metrics_reset();
 #ifdef CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS
-    atomic64_set(&last_sec_record, 0);
+    /* Circular buffer slots are initialized with epoch=0, which will be
+     * updated on first write. No explicit initialization needed. */
 #endif /* CONFIG_OPLUS_FEATURE_STORAGE_IOLATENCY_STATS */
 }

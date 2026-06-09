@@ -1250,6 +1250,10 @@ populate_dot11f_ht_caps(struct mac_context *mac,
 				pe_session->htSupportedChannelWidthSet;
 		}
 
+		/* Check ACTION_OUI_LIMIT_BW flag for 2.4GHz IoT AP compatibility */
+		if (pe_session->action_oui_limit_bw_2g)
+			pDot11f->supportedChannelWidthSet = 0;
+
 		pDot11f->advCodingCap = pe_session->ht_config.adv_coding_cap;
 		pDot11f->txSTBC = pe_session->ht_config.tx_stbc;
 		pDot11f->rxSTBC = pe_session->ht_config.rx_stbc;
@@ -1949,6 +1953,52 @@ void populate_dot11f_bss_max_idle(struct mac_context *mac,
 	}
 }
 
+/**
+ * populate_dot11f_ds_params() - To populate QCN IE params
+ * @mac_ctx: Pointer to global mac context
+ * @qcn_ie: pointer to QCN IE
+ * @frame_type: frame type
+ *
+ * This routine will populate CCK param in QCN IE of Assoc req
+ * management frame.
+ *
+ * Return: NA
+ */
+static
+void populate_dot11f_5g_cck_support_param(struct mac_context *mac,
+					  struct pe_session *pe_session,
+					  tDot11fIEqcn_ie *qcn_ie,
+					  enum mgmt_frame_type frame_type)
+{
+	bool cck_tx_5g = false, cck_rx_5g = false;
+
+	/*
+	 * Add Ie only if QCN Ie is advertised in beacon and
+	 * don't add Ie for probe req.
+	 */
+	if ((frame_type == MGMT_ASSOC_REQ &&
+	   !pe_session->qcn_ie_present_in_beacon) ||
+	   frame_type == MGMT_PROBE_REQ)
+		return;
+	/*
+	 * for other modes frame check required.
+	 * As of now ini is enabled only for STA, so
+	 * Ie will not added for other frames
+	 */
+
+	if (!(wlan_get_rx_tx_cck_5g_support_for_mode(
+					mac->psoc, pe_session->opmode,
+					&cck_rx_5g, &cck_tx_5g)))
+		return;
+
+	qcn_ie->present = 1;
+	qcn_ie->target_cck_support_attr.present = 1;
+
+	qcn_ie->target_cck_support_attr.target_cck_rx_supp_5g = cck_rx_5g;
+
+	qcn_ie->target_cck_support_attr.target_cck_tx_supp_5g = cck_tx_5g;
+}
+
 void populate_dot11f_edca_pifs_param_set(struct mac_context *mac,
 					 tDot11fIEqcn_ie *qcn_ie)
 {
@@ -2003,7 +2053,7 @@ void populate_dot11f_ecsa_param_set_for_ll_sap(
 void populate_dot11f_qcn_ie(struct mac_context *mac,
 			    struct pe_session *pe_session,
 			    tDot11fIEqcn_ie *qcn_ie,
-			    uint8_t attr_id)
+			    uint8_t attr_id, enum mgmt_frame_type frame_type)
 {
 	qcn_ie->present = 0;
 	if (mac->mlme_cfg->sta.qcn_ie_support &&
@@ -2026,6 +2076,9 @@ void populate_dot11f_qcn_ie(struct mac_context *mac,
 		pe_debug("Populate edca/pifs param ie for ll sap");
 		populate_dot11f_edca_pifs_param_set(mac, qcn_ie);
 	}
+
+	populate_dot11f_5g_cck_support_param(mac, pe_session,
+					     qcn_ie, frame_type);
 }
 
 QDF_STATUS
@@ -8238,7 +8291,8 @@ populate_dot11f_twt_he_cap(struct mac_context *mac,
 
 	switch (opmode) {
 	case QDF_P2P_CLIENT_MODE:
-		if (!wlan_vdev_p2p_is_wfd_r2_mode(mac->psoc, vdev_id))
+		if (!(wlan_vdev_p2p_is_wfd_r2_mode(mac->psoc, vdev_id) ||
+		      wlan_vdev_p2p_is_pcc_mode(mac->psoc, vdev_id)))
 			break;
 		fallthrough;
 	case QDF_STA_MODE:
@@ -8251,7 +8305,8 @@ populate_dot11f_twt_he_cap(struct mac_context *mac,
 		he_cap->broadcast_twt = bcast_requestor;
 		break;
 	case QDF_P2P_GO_MODE:
-		if (!wlan_vdev_p2p_is_wfd_r2_mode(mac->psoc, vdev_id))
+		if (!(wlan_vdev_p2p_is_wfd_r2_mode(mac->psoc, vdev_id) ||
+		      wlan_vdev_p2p_is_pcc_mode(mac->psoc, vdev_id)))
 			break;
 		fallthrough;
 	case QDF_SAP_MODE:
@@ -12965,8 +13020,8 @@ QDF_STATUS populate_dot11f_twt_extended_caps(struct mac_context *mac_ctx,
 
 	switch (opmode) {
 	case QDF_P2P_CLIENT_MODE:
-		if (!wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc,
-						  vdev_id))
+		if (!(wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id) ||
+		      wlan_vdev_p2p_is_pcc_mode(mac_ctx->psoc, vdev_id)))
 			break;
 		fallthrough;
 	case QDF_STA_MODE:
@@ -12975,8 +13030,8 @@ QDF_STATUS populate_dot11f_twt_extended_caps(struct mac_context *mac_ctx,
 			twt_requestor && twt_get_requestor_flag(mac_ctx);
 		break;
 	case QDF_P2P_GO_MODE:
-		if (!wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc,
-						  vdev_id))
+		if (!(wlan_vdev_p2p_is_wfd_r2_mode(mac_ctx->psoc, vdev_id) ||
+		      wlan_vdev_p2p_is_pcc_mode(mac_ctx->psoc, vdev_id)))
 			break;
 		fallthrough;
 	case QDF_SAP_MODE:
@@ -14099,6 +14154,7 @@ QDF_STATUS populate_dot11f_assoc_req_mlo_ie(struct mac_context *mac_ctx,
 	ie_len = wlan_get_ielen_from_bss_description(bss_desc);
 	attr.ie_data = (uint8_t *)&bss_desc->ieFields[0];
 	attr.ie_length = ie_len;
+	attr.mac_addr = &bss_desc->bssId[0];
 
 	/*
 	 * Include Ext MLD caps if the support is set in MLME or if the AP

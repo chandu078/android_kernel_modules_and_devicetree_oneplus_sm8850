@@ -301,13 +301,9 @@ static bool vma_is_dynamic(struct kgsl_device *device, int vma_id)
 	return (vma_id == GMU_NONCACHED_KERNEL) && (!adreno_is_a6xx(ADRENO_DEVICE(device)));
 }
 
-static int insert_va(struct gmu_vma_entry *vma, u32 addr, u32 size)
+static int insert_va(struct gmu_vma_entry *vma, u32 addr, u32 size, struct gmu_vma_node *new)
 {
 	struct rb_node **node, *parent = NULL;
-	struct gmu_vma_node *new = kzalloc(sizeof(*new), GFP_NOWAIT);
-
-	if (new == NULL)
-		return -ENOMEM;
 
 	new->va = addr;
 	new->size = size;
@@ -324,7 +320,6 @@ static int insert_va(struct gmu_vma_entry *vma, u32 addr, u32 size)
 		else if (addr >= this->va + this->size)
 			node = &parent->rb_right;
 		else {
-			kfree(new);
 			return -EEXIST;
 		}
 	}
@@ -371,6 +366,10 @@ static int _map_gmu_dynamic(struct kgsl_device *device, struct kgsl_memdesc *md,
 	struct gmu_vma_node *vma_node = NULL;
 	int ret;
 	u32 size = ALIGN(md->size, hfi_get_gmu_sz_alignment(align));
+	struct gmu_vma_node *new = kzalloc(sizeof(*new), GFP_KERNEL);
+
+	if (!new)
+		return -ENOMEM;
 
 	spin_lock(&vma->lock);
 	if (!addr) {
@@ -381,15 +380,17 @@ static int _map_gmu_dynamic(struct kgsl_device *device, struct kgsl_memdesc *md,
 		addr = find_unmapped_va(vma, size, hfi_get_gmu_va_alignment(align));
 		if (addr == 0) {
 			spin_unlock(&vma->lock);
+			kfree(new);
 			dev_err(gmu_pdev_dev,
 				"Insufficient VA space size: %x\n", size);
 			return -ENOMEM;
 		}
 	}
 
-	ret = insert_va(vma, addr, size);
+	ret = insert_va(vma, addr, size, new);
 	spin_unlock(&vma->lock);
 	if (ret < 0) {
+		kfree(new);
 		dev_err(gmu_pdev_dev,
 			"Could not insert va: %x size %x\n", addr, size);
 		return ret;
@@ -407,7 +408,7 @@ static int _map_gmu_dynamic(struct kgsl_device *device, struct kgsl_memdesc *md,
 		addr, md->size, ret);
 
 	spin_lock(&vma->lock);
-	vma_node = find_va(vma, md->gmuaddr, size);
+	vma_node = find_va(vma, addr, size);
 	if (vma_node)
 		rb_erase(&vma_node->node, &vma->vma_root);
 	spin_unlock(&vma->lock);

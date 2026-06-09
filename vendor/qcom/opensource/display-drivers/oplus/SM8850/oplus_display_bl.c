@@ -1099,6 +1099,13 @@ void oplus_panel_update_backlight(struct dsi_panel *panel,
 
 	oplus_apollo_async_bl_frame_delay(panel);
 
+	if ((is_project(24831) || is_project(24863))
+			&& panel->oplus_panel.pwm_params.pwm_switch_state == PWM_SWITCH_MODE2
+			&& ((bl_lvl >= 17) && (bl_lvl < 175))) {
+		OPLUS_DSI_ERR("backlight=%d, Full brightness PWM, backlight 17 ~ 175 is prohibited\n", bl_lvl);
+		bl_lvl = 175;
+	}
+
 	/* will inverted display brightness value */
 	if (panel->bl_config.bl_inverted_dbv)
 		inverted_dbv_bl_lvl = (((bl_lvl & 0xff) << 8) | (bl_lvl >> 8));

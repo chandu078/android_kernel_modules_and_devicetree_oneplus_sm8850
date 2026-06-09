@@ -22,6 +22,7 @@
 #include <linux/shrinker.h>
 
 #include "oplus_boost_pool_mtk.h"
+#include "mm_osvelte/mm-config.h"
 
 #define CREATE_TRACE_POINTS
 #include "trace_dma_buf.h"
@@ -721,6 +722,14 @@ struct boost_pool *boost_pool_create(const char *name, bool smmu_v3_enable)
 	struct proc_dir_entry *proc_low, *proc_min, *proc_alloc,
 			      *proc_cpu, *proc_custom_pid;
 	bool uncached;
+
+	struct config_oplus_boost_pool *config;
+
+	config = oplus_read_mm_config(module_name_boost_pool);
+	if (config && !config->enable) {
+		pr_info("%s is disabled in config\n", module_name_boost_pool);
+		return NULL;
+	}
 
 	ret = boost_pool_mgr_init();
 	if (ret)

@@ -258,6 +258,7 @@
 #include "wlan_hdd_tx_powerboost.h"
 #include "wifi_pos_pasn_api.h"
 #include "wlan_cp_stats_ucfg_api.h"
+#include "wlan_hdd_wondertap.h"
 
 #ifdef MULTI_CLIENT_LL_SUPPORT
 #define WLAM_WLM_HOST_DRIVER_PORT_ID 0xFFFFFF
@@ -3213,6 +3214,7 @@ int hdd_update_tgt_cfg(hdd_handle_t hdd_handle, struct wma_tgt_cfg *cfg)
 	hdd_update_wiphy_eht_cap(hdd_ctx);
 	ucfg_mlme_update_tgt_mlo_cap(hdd_ctx->psoc);
 	ucfg_mlme_update_dual_sap_sta_support(hdd_ctx->psoc);
+	ucfg_mlme_update_mcc_cck_support(hdd_ctx->psoc);
 
 	for (band = NSS_CHAINS_BAND_2GHZ; band < NSS_CHAINS_BAND_MAX; band++) {
 		sme_modify_nss_chains_tgt_cfg(hdd_ctx->mac_handle,
@@ -4016,6 +4018,7 @@ int hdd_start_adapter(struct hdd_adapter *adapter, bool rtnl_held)
 
 	switch (device_mode) {
 	case QDF_MONITOR_MODE:
+	case QDF_PASSTHRU_MODE:
 		ret = hdd_start_station_adapter(adapter);
 		if (ret)
 			goto err_start_adapter;
@@ -6374,7 +6377,8 @@ hdd_is_dynamic_set_mac_addr_supported(struct hdd_context *hdd_ctx)
 #if defined(WLAN_FEATURE_11BE_MLO) && defined(WLAN_HDD_MULTI_VDEV_SINGLE_NDEV)
 QDF_STATUS
 hdd_adapter_update_links_on_link_switch(struct wlan_hdd_link_info *cur_link_info,
-					struct wlan_hdd_link_info *new_link_info)
+					struct wlan_hdd_link_info *new_link_info,
+					bool is_roam)
 {
 	unsigned long link_flags;
 	struct wlan_objmgr_vdev *vdev;
@@ -6382,6 +6386,7 @@ hdd_adapter_update_links_on_link_switch(struct wlan_hdd_link_info *cur_link_info
 	uint8_t cur_old_pos, cur_new_pos;
 	struct vdev_osif_priv *vdev_priv;
 	struct hdd_adapter *adapter = cur_link_info->adapter;
+	struct hdd_station_ctx *sta_ctx;
 
 	/* Update the new position of current and new link info
 	 * in the link info array.
@@ -6417,6 +6422,11 @@ hdd_adapter_update_links_on_link_switch(struct wlan_hdd_link_info *cur_link_info
 	/* Update VDEV-OSIF priv pointer to new link info */
 	vdev_priv = wlan_vdev_get_ospriv(new_link_info->vdev);
 	vdev_priv->legacy_osif_priv = new_link_info;
+
+	if (is_roam) {
+		sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(cur_link_info);
+		sta_ctx->conn_info.ieee_link_id = WLAN_INVALID_LINK_ID;
+	}
 
 	return QDF_STATUS_SUCCESS;
 }
@@ -6492,7 +6502,8 @@ hdd_link_switch_vdev_mac_addr_update(int32_t ieee_old_link_id,
 	}
 
 	status = hdd_adapter_update_links_on_link_switch(cur_link_info,
-							 new_link_info);
+							 new_link_info,
+							 false);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		hdd_err("Failed to update adapter link info");
 		goto release_ref;
@@ -6557,7 +6568,8 @@ QDF_STATUS hdd_roam_vdev_mac_addr_update(struct wlan_objmgr_vdev *vdev,
 		QDF_MAC_ADDR_REF(new_self_mac->bytes));
 
 	status = hdd_adapter_update_links_on_link_switch(cur_link_info,
-							 new_link_info);
+							 new_link_info,
+							 true);
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_err("Failed to update adapter link info, status %d",
 			status);
@@ -6615,7 +6627,8 @@ QDF_STATUS hdd_link_recfg_mac_addr_update(struct wlan_objmgr_vdev *vdev,
 		  QDF_MAC_ADDR_REF(new_self_mac->bytes));
 
 	status = hdd_adapter_update_links_on_link_switch(cur_link_info,
-							 new_link_info);
+							 new_link_info,
+							 false);
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_err("Failed to update adapter link info, status %d",
 			status);
@@ -7434,6 +7447,23 @@ static void hdd_set_mon_ops(struct net_device *dev)
 }
 #endif
 
+#ifdef DRIVER_PASSTHRU_MODE
+static const struct net_device_ops wlan_passthrough_ops = {
+		.ndo_start_xmit = hdd_hard_start_xmit_passthru,
+		.ndo_tx_timeout = hdd_tx_timeout,
+		.ndo_get_stats = hdd_get_stats,
+};
+
+static inline void hdd_set_passthrough_ops(struct net_device *dev)
+{
+	dev->netdev_ops = &wlan_passthrough_ops;
+}
+#else
+static inline void hdd_set_passthrough_ops(struct net_device *dev)
+{
+}
+#endif
+
 #ifdef WLAN_FEATURE_PKT_CAPTURE
 /* Packet Capture mode net_device_ops, does not Tx and most of operations. */
 static const struct net_device_ops wlan_pktcapture_drv_ops = {
@@ -7504,6 +7534,19 @@ hdd_alloc_station_adapter(struct hdd_context *hdd_ctx, tSirMacAddr mac_addr,
 	struct hdd_adapter *adapter;
 	QDF_STATUS qdf_status;
 	uint8_t latency_level;
+	unsigned int num_tx_queues;
+
+	switch (session_type) {
+	case QDF_STA_MODE:
+		num_tx_queues = NDP_NUM_TX_QUEUES;
+		break;
+	case QDF_PASSTHRU_MODE:
+		num_tx_queues = 1;
+		break;
+	default:
+		num_tx_queues = NUM_TX_QUEUES;
+		break;
+	}
 
 	/* cfg80211 initialization and registration */
 	dev = alloc_netdev_mqs(sizeof(*adapter), name,
@@ -7511,10 +7554,10 @@ hdd_alloc_station_adapter(struct hdd_context *hdd_ctx, tSirMacAddr mac_addr,
 			      name_assign_type,
 #endif
 			      ((cds_get_conparam() == QDF_GLOBAL_MONITOR_MODE ||
-			       wlan_hdd_is_session_type_monitor(session_type)) ?
+			       wlan_hdd_is_session_type_monitor(session_type) ||
+			       session_type == QDF_PASSTHRU_MODE) ?
 			       hdd_mon_mode_ether_setup : ether_setup),
-			      ((session_type == QDF_STA_MODE) ?
-			       NDP_NUM_TX_QUEUES : NUM_TX_QUEUES),
+			      num_tx_queues,
 			      NUM_RX_QUEUES);
 
 	if (!dev) {
@@ -7558,6 +7601,8 @@ hdd_alloc_station_adapter(struct hdd_context *hdd_ctx, tSirMacAddr mac_addr,
 		if (ucfg_mlme_is_sta_mon_conc_supported(hdd_ctx->psoc) ||
 		    ucfg_dp_is_local_pkt_capture_enabled(hdd_ctx->psoc))
 			hdd_set_mon_ops(adapter->dev);
+	} else if (session_type == QDF_PASSTHRU_MODE) {
+		hdd_set_passthrough_ops(adapter->dev);
 	} else {
 		hdd_set_station_ops(adapter->dev);
 	}
@@ -7919,6 +7964,8 @@ int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info)
 	hdd_vdev_deinit_components(vdev);
 	hdd_mlo_t2lm_unregister_callback(vdev);
 	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+
+	qdf_flush_work(&link_info->ch_chng_info.chan_change_notify_work);
 
 	hdd_reset_vdev_info(link_info);
 	osif_cm_osif_priv_deinit(vdev);
@@ -8688,6 +8735,7 @@ void hdd_deinit_session(struct hdd_adapter *adapter)
 	case QDF_P2P_DEVICE_MODE:
 	case QDF_NDI_MODE:
 	case QDF_NAN_DISC_MODE:
+	case QDF_PASSTHRU_MODE:
 	{
 		hdd_deinit_station_mode(adapter);
 		break;
@@ -9786,6 +9834,7 @@ struct hdd_adapter *hdd_open_adapter(struct hdd_context *hdd_ctx,
 	case QDF_NDI_MODE:
 	case QDF_MONITOR_MODE:
 	case QDF_NAN_DISC_MODE:
+	case QDF_PASSTHRU_MODE:
 		adapter = hdd_alloc_station_adapter(hdd_ctx, mac_addr,
 						    name_assign_type,
 						    iface_name, session_type);
@@ -10020,10 +10069,6 @@ static void __hdd_close_adapter(struct hdd_context *hdd_ctx,
 		hdd_adapter_for_each_link_info(adapter, link_info)
 			hdd_cleanup_conn_info(link_info);
 	}
-
-	hdd_adapter_for_each_link_info(adapter, link_info)
-		qdf_flush_work(
-			&link_info->ch_chng_info.chan_change_notify_work);
 
 	qdf_list_destroy(&adapter->blocked_scan_request_q);
 	qdf_mutex_destroy(&adapter->blocked_scan_request_q_lock);
@@ -10475,12 +10520,15 @@ static void hdd_stop_station_adapter(struct hdd_adapter *adapter)
 	hdd_adapter_for_each_active_link_info(adapter, link_info) {
 		vdev = hdd_objmgr_get_vdev_by_user(link_info,
 						   WLAN_INIT_DEINIT_ID);
-		if (!vdev)
+		if (!vdev) {
+			qdf_flush_work(&link_info->ch_chng_info.chan_change_notify_work);
 			continue;
+		}
 
 		if (mode == QDF_NDI_MODE)
 			hdd_stop_and_cleanup_ndi(link_info);
-		else if (!hdd_cm_is_disconnected(link_info))
+		else if (!hdd_cm_is_disconnected(link_info) &&
+			 mode != QDF_PASSTHRU_MODE)
 			hdd_sta_disconnect_and_cleanup(link_info);
 
 		hdd_reset_scan_operation(link_info);
@@ -10548,7 +10596,8 @@ wlan_hdd_delete_mon_link(struct hdd_adapter *adapter,
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_err_rl("failed to reinit vdev stop event");
 
-	sme_delete_mon_session(hdd_ctx->mac_handle, link_info->vdev_id);
+	sme_delete_pe_session(hdd_ctx->mac_handle, link_info->vdev_id,
+			      QDF_MONITOR_MODE);
 
 	/* block until vdev stop success*/
 	status =
@@ -10796,7 +10845,11 @@ QDF_STATUS hdd_stop_adapter_ext(struct hdd_context *hdd_ctx,
 	case QDF_NDI_MODE:
 	case QDF_P2P_DEVICE_MODE:
 	case QDF_NAN_DISC_MODE:
+	case QDF_PASSTHRU_MODE:
 		hdd_stop_station_adapter(adapter);
+
+		if (adapter->device_mode == QDF_PASSTHRU_MODE)
+			hdd_set_idle_ps_config(hdd_ctx, true);
 		break;
 	case QDF_MONITOR_MODE:
 		status = hdd_stop_mon_adapter(adapter);
@@ -18044,9 +18097,8 @@ static void hdd_v2_flow_pool_map(int vdev_id)
 		return;
 	}
 
-	if (wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev) ||
-	    policy_mgr_is_set_link_in_progress(wlan_vdev_get_psoc(vdev))) {
-		hdd_info_rl("Link switch/set_link is ongoing, do not invoke flow pool map");
+	if (wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev)) {
+		hdd_info_rl("Link switch is ongoing, do not invoke flow pool map");
 		goto release_ref;
 	}
 
@@ -18090,9 +18142,8 @@ static void hdd_v2_flow_pool_unmap(int vdev_id)
 		return;
 	}
 
-	if (wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev) ||
-	    policy_mgr_is_set_link_in_progress(wlan_vdev_get_psoc(vdev))) {
-		hdd_info("vdev:%d Link switch/set_link is ongoing do not invoke flow pool unmap",
+	if (wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev)) {
+		hdd_info("vdev:%d Link switch is ongoing do not invoke flow pool unmap",
 			 vdev_id);
 		goto release_ref;
 	}
@@ -19520,8 +19571,9 @@ int hdd_register_cb(struct hdd_context *hdd_ctx)
 					   hdd_common_roam_callback);
 
 	sme_set_roam_scan_ch_event_cb(mac_handle, hdd_get_roam_scan_ch_cb);
-	status = sme_set_monitor_mode_cb(mac_handle,
-					 hdd_sme_monitor_mode_callback);
+	status = sme_set_op_mode_cb(mac_handle,
+				    hdd_sme_monitor_mode_callback,
+				    hdd_sme_passthrough_mode_callback);
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_err_rl("Register monitor mode callback failed");
 
@@ -20029,6 +20081,15 @@ bool hdd_is_any_adapter_connected(struct hdd_context *hdd_ctx)
 
 			if (adapter->device_mode == QDF_NDI_MODE &&
 			    hdd_cm_is_vdev_associated(link_info)) {
+				hdd_adapter_dev_put_debug(adapter, dbgid);
+				if (next_adapter)
+					hdd_adapter_dev_put_debug(next_adapter,
+								  dbgid);
+				return true;
+			}
+
+			if (adapter->device_mode == QDF_PASSTHRU_MODE &&
+			    netif_carrier_ok(adapter->dev)) {
 				hdd_adapter_dev_put_debug(adapter, dbgid);
 				if (next_adapter)
 					hdd_adapter_dev_put_debug(next_adapter,

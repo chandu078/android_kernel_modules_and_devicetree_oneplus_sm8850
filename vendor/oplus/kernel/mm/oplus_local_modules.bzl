@@ -12,7 +12,7 @@ def define_oplus_local_modules():
         hybridswap_zram_ko_deps = []
     elif bazel_support_platform == "mtk" :
         hybridswap_zram_ko_deps = ["//kernel_device_modules-6.12/drivers/gpu/drm/mediatek/mediatek_v2:mtk_disp_notify",":oplus_bsp_mm_osvelte"]
-        if target == "k6789v1_64" :
+        if target in ["k6789v1_64", "k6895v1_64"] :
             zram_opt_ko_deps = ["//vendor/oplus/kernel/mm:oplus_bsp_hybridswap_zram","//vendor/oplus/kernel/cpu:oplus_bsp_sched_assist",":oplus_bsp_mm_osvelte"]
         else :
             zram_opt_ko_deps = ["//kernel_device_modules-6.12/drivers/misc/mediatek/mtk_zram:mtk_zram","//vendor/oplus/kernel/cpu:oplus_bsp_sched_assist",":oplus_bsp_mm_osvelte"]

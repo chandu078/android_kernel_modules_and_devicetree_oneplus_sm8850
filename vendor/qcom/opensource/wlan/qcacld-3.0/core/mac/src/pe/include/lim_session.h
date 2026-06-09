@@ -740,6 +740,7 @@ struct punc_chan_info {
  * @start_bss_rnr_ie: RNRIE
  * @user_edca_set:
  * @is_oui_auth_assoc_6mbps_2ghz_enable: send auth/assoc req with 6 Mbps rate
+ * @action_oui_limit_bw_2g: Disable 40 MHz BW when connect 2 GHz IoT AP
  * @is_unexpected_peer_error: true if unexpected peer error
  * on 2.4 GHz
  * @is_amsdu_2g_enabled: Is amsdu enabled for 2g connection with IoT AP
@@ -748,6 +749,7 @@ struct punc_chan_info {
  * @rsno_gen_used: rsno gen used for connection
  * @wnm_action_dialog_token: Dialog token for WNM action frames.
  * @dfs_p2p_info: DFS P2P group operation info.
+ * @qcn_ie_present_in_beacon: QCN Ie Present in beacon
  */
 struct pe_session {
 	uint8_t available;
@@ -1078,12 +1080,14 @@ struct pe_session {
 	uint8_t user_edca_set;
 	bool is_oui_auth_assoc_6mbps_2ghz_enable;
 	bool is_unexpected_peer_error;
+	bool action_oui_limit_bw_2g;
 	bool is_amsdu_2g_enabled;
 	uint8_t join_probe_cnt;
 	bool cal_tpc_post_csa;
 	uint8_t rsno_gen_used;
 	uint8_t wnm_action_dialog_token;
 	struct dfs_p2p_group_info dfs_p2p_info;
+	uint8_t qcn_ie_present_in_beacon;
 };
 
 /*-------------------------------------------------------------------------

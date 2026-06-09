@@ -440,9 +440,7 @@ static void __lowmem_dbg_dump(struct lowmem_dbg_cfg *cfg)
 	unsigned long file, active_file, inactive_file, shmem;
 	unsigned long vmalloc, pgtbl, kernel_stack, kernel_misc_reclaimable;
 	unsigned long dmabuf, dmabuf_pool, gpu, unaccounted;
-#ifdef CONFIG_CONT_PTE_HUGEPAGE
-	unsigned long chp_pool_cma, chp_pool_buddy, anon_huge;
-#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+	unsigned long shmem_swapped;
 	struct sysinfo si;
 	struct files_acct files_acct;
 
@@ -463,7 +461,7 @@ static void __lowmem_dbg_dump(struct lowmem_dbg_cfg *cfg)
 	active_anon = sys_active_anon();
 	inactive_anon = sys_inactive_anon();
 	shmem = sys_sharedram();
-
+	shmem_swapped = read_mtrack_vh_mem_usage(MTRACK_VH_SHMEM_SWAPED);
 	file = sys_file();
 	active_file = sys_active_file();
 	inactive_file = sys_inactive_file();
@@ -477,11 +475,6 @@ static void __lowmem_dbg_dump(struct lowmem_dbg_cfg *cfg)
 	dmabuf_pool = read_mtrack_mem_usage(MTRACK_DMABUF, MTRACK_DMABUF_POOL);
 	gpu = read_mtrack_mem_usage(MTRACK_GPU, MTRACK_GPU_TOTAL);
 
-#ifdef CONFIG_CONT_PTE_HUGEPAGE
-	chp_pool_cma = sys_chp_pool_cma();
-	chp_pool_buddy = sys_chp_pool_buddy();
-	anon_huge = sys_anon_huge();
-#endif
 	unaccounted = tot - free - slab_reclaimable - slab_unreclaimable -
 		vmalloc - anon - file - pgtbl - kernel_stack - dmabuf -
 		gpu - kernel_misc_reclaimable;
@@ -500,16 +493,12 @@ static void __lowmem_dbg_dump(struct lowmem_dbg_cfg *cfg)
 		     K(slab_reclaimable), K(slab_unreclaimable));
 	osvelte_info("anon: %lu active_anon: %lu inactive_anon: %lu\n",
 		     K(anon), K(active_anon), K(inactive_anon));
-	osvelte_info("file: %lu active_file: %lu inactive_file: %lu shmem: %lu\n",
-		     K(file), K(active_file), K(inactive_file), K(shmem));
+	osvelte_info("file: %lu active_file: %lu inactive_file: %lu shmem: %lu, shmem_swapped: %lu\n",
+		     K(file), K(active_file), K(inactive_file), K(shmem), K(shmem_swapped));
 	osvelte_info("vmalloc: %lu page_tables: %lu kernel_stack: %lu kernel_misc_reclaimable: %lu\n",
 		     K(vmalloc), K(pgtbl), K(kernel_stack), K(kernel_misc_reclaimable));
 	osvelte_info("dmabuf: %lu dmabuf_pool: %lu gpu: %lu unaccounted: %lu\n",
 		     K(dmabuf), K(dmabuf_pool), K(gpu), K(unaccounted));
-#ifdef CONFIG_CONT_PTE_HUGEPAGE
-	osvelte_info("anon_huge: %lu chp_pool_cma: %lu chp_pool_buddy: %lu",
-		     K(anon_huge), K(chp_pool_cma), K(chp_pool_buddy));
-#endif /* CONFIG_CONT_PTE_HUGEPAGE */
 
 	dump_procs(true);
 	dump_slab_info(slab_unreclaimable > cfg->watermark_slab);
@@ -625,7 +614,7 @@ int osvelte_lowmem_dbg_init(struct kobject *root, struct proc_dir_entry *proc_ro
 	else
 		cfg->watermark_low = PAGES(SZ_256M);
 	cfg->watermark_slab = PAGES(SZ_1G);
-	cfg->watermark_dmabuf = PAGES(SZ_2G + SZ_512M);
+	cfg->watermark_dmabuf = PAGES(SZ_1G + SZ_512M);
 	cfg->watermark_gpu = PAGES(SZ_2G + SZ_512M);
 	cfg->watermark_other = PAGES(SZ_1G);
 

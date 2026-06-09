@@ -16,6 +16,7 @@
 #endif
 
 #ifdef OPLUS_FEATURE_DISPLAY
+#include <linux/rtc.h>
 #include "oplus_display_device_ioctl.h"
 #include "oplus_display_interface.h"
 #endif /* OPLUS_FEATURE_DISPLAY */
@@ -574,6 +575,94 @@ static void sde_encoder_phys_cmd_autorefresh_done_irq(void *arg, int irq_idx)
 	wake_up_all(&cmd_enc->autorefresh.kickoff_wq);
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#define OPLUS_SCHED_STATUS_MAX_SAMPLES	16
+/* "%02u:%02u:%02u.%03u" => 12 characters + terminating NUL. */
+#define OPLUS_SCHED_STATUS_TIMESTR_LEN		13
+/* Comma-separated line: N*(12) + (N-1)*", " + NUL. */
+#define OPLUS_SCHED_STATUS_LINE_LEN \
+	(OPLUS_SCHED_STATUS_MAX_SAMPLES * 12 + \
+	 (OPLUS_SCHED_STATUS_MAX_SAMPLES - 1) * 2 + 1)
+
+/*
+ * scheduler_status==0x20: wall time HH:MM:SS.mmm per hit (UTC).
+ * Print when: (1) buffer full 16, or (2) batch age >=1s and 0<count<16.
+ * If no 0x20 for >=1s, discard pending rows (no printk) — nothing "new" in that 1s gap.
+ * Shared static batch state: protect with spinlock (may run on different CPUs / encoders).
+ */
+static DEFINE_SPINLOCK(oplus_te_rd_ptr_sched_status_batch_log_lock);
+
+static void _oplus_te_rd_ptr_emit_sched_status_batch_log(void)
+{
+	static u64 batch_mono_start_ns;
+	static u64 last_hit_mono_ns;
+	static u32 count;
+	static char timestr[OPLUS_SCHED_STATUS_MAX_SAMPLES][OPLUS_SCHED_STATUS_TIMESTR_LEN];
+
+	unsigned long irq_flags;
+	u64 now_ns;
+	struct timespec64 wall;
+	struct rtc_time tm;
+	char line_out[OPLUS_SCHED_STATUS_LINE_LEN];
+	const char *why_out;
+	char *p;
+	size_t left;
+	u32 i;
+
+	spin_lock_irqsave(&oplus_te_rd_ptr_sched_status_batch_log_lock, irq_flags);
+
+	now_ns = ktime_get_ns();
+
+	if (count > 0 && now_ns - last_hit_mono_ns >= NSEC_PER_SEC) {
+		count = 0;
+		batch_mono_start_ns = 0;
+	}
+
+	if (count >= OPLUS_SCHED_STATUS_MAX_SAMPLES)
+		count = 0;
+
+	if (count == 0)
+		batch_mono_start_ns = now_ns;
+
+	ktime_get_real_ts64(&wall);
+	rtc_time64_to_tm(wall.tv_sec, &tm);
+	scnprintf(timestr[count], sizeof(timestr[0]), "%02u:%02u:%02u.%03u",
+			tm.tm_hour, tm.tm_min, tm.tm_sec,
+			(unsigned int)(wall.tv_nsec / NSEC_PER_MSEC));
+	count++;
+	last_hit_mono_ns = now_ns;
+
+	if (count >= OPLUS_SCHED_STATUS_MAX_SAMPLES)
+		why_out = "ring_full";
+	else if (count > 0 &&
+		 now_ns - batch_mono_start_ns >= NSEC_PER_SEC)
+		why_out = "1s_window";
+	else {
+		spin_unlock_irqrestore(&oplus_te_rd_ptr_sched_status_batch_log_lock, irq_flags);
+		return;
+	}
+
+	p = line_out;
+	left = sizeof(line_out);
+	for (i = 0; i < count; i++) {
+		int len;
+
+		len = scnprintf(p, left, "%s%s", i ? ", " : "", timestr[i]);
+		if (len >= left)
+			break;
+		p += len;
+		left -= len;
+	}
+
+	count = 0;
+	batch_mono_start_ns = 0;
+
+	spin_unlock_irqrestore(&oplus_te_rd_ptr_sched_status_batch_log_lock, irq_flags);
+
+	SDE_INFO("te_rd_ptr_scheduler_status_0x20 %s (%s)", line_out, why_out);
+}
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 {
 	struct sde_encoder_phys *phys_enc = arg;
@@ -622,6 +711,9 @@ static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 	if (oplus_display_ops.encoder_phys_cmd_te_rd_ptr_irq_pre) {
 		oplus_display_ops.encoder_phys_cmd_te_rd_ptr_irq_pre(phys_enc, te_timestamp);
 	}
+
+	if (scheduler_status == 0x20)
+		_oplus_te_rd_ptr_emit_sched_status_batch_log();
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 	if ((scheduler_status != 0x1) && ctl->ops.get_hw_fence_status[disp_op])

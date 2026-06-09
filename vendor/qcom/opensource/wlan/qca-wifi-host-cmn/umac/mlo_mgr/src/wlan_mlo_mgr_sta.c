@@ -3552,14 +3552,8 @@ rel_ref:
 void
 mlo_mgr_flush_connected_profile_scan_entry(struct wlan_objmgr_vdev *vdev)
 {
-	struct wlan_mlo_dev_context *ml_dev;
 	struct wlan_objmgr_pdev *pdev;
-	struct mlo_link_info *link_info;
 	struct scan_filter *filter;
-	struct bss_info bss_info = {0};
-	struct mlme_info mlme;
-	QDF_STATUS status;
-	uint8_t i;
 
 	if (!wlan_vdev_mlme_is_mlo_vdev(vdev))
 		return;
@@ -3568,37 +3562,93 @@ mlo_mgr_flush_connected_profile_scan_entry(struct wlan_objmgr_vdev *vdev)
 	if (!pdev)
 		return;
 
-	ml_dev = vdev->mlo_dev_ctx;
-	status = wlan_vdev_mlme_get_ssid(vdev, bss_info.ssid.ssid,
-					 &bss_info.ssid.length);
-	if (QDF_IS_STATUS_ERROR(status)) {
-		mlo_err("failed to get ssid");
-		return;
-	}
-
-	mlme.assoc_state = SCAN_ENTRY_CON_STATE_NONE;
-
 	filter = qdf_mem_malloc(sizeof(*filter));
 	if (!filter)
 		return;
 
-	link_info = &ml_dev->link_ctx->links_info[0];
-	for (i = 0; i < WLAN_MAX_ML_BSS_LINKS; i++, link_info++) {
-		if (qdf_is_macaddr_zero(&link_info->ap_link_addr))
-			continue;
+	filter->num_of_ssid = 1;
+	wlan_vdev_mlme_get_ssid(vdev, filter->ssid_list[0].ssid,
+				&filter->ssid_list[0].length);
+	filter->flush_local_gen = 1;
 
-		qdf_copy_macaddr(&bss_info.bssid, &link_info->ap_link_addr);
-		bss_info.freq = link_info->chan_freq;
-		wlan_scan_update_mlme_by_bssinfo(pdev, &bss_info, &mlme);
-
-		filter->num_of_bssid = 1;
-		qdf_copy_macaddr(&filter->bssid_list[0],
-				 &link_info->ap_link_addr);
-		if (wlan_scan_is_locally_generated_entry(pdev,
-						   &link_info->ap_link_addr))
-			wlan_scan_flush_results(pdev, filter);
-	}
+	wlan_scan_flush_results(pdev, filter);
 
 	qdf_mem_free(filter);
 }
+
+struct wlan_channel *
+mlo_get_standby_mlo_link_chan_in_freq_range(struct wlan_objmgr_psoc *psoc,
+					    enum QDF_OPMODE device_mode,
+					    qdf_freq_t start_freq,
+					    qdf_freq_t end_freq)
+{
+	struct wlan_objmgr_vdev *vdev;
+	struct wlan_mlo_dev_context *mlo_dev_ctx;
+	struct mlo_link_info *ml_link_info;
+	uint8_t vdev_id, link_iter;
+
+	/* Iterate through vdevs to find MLO adapters */
+	for (vdev_id = 0; vdev_id < WLAN_UMAC_PSOC_MAX_VDEVS; vdev_id++) {
+		vdev = wlan_objmgr_get_vdev_by_id_from_psoc(psoc, vdev_id,
+							    WLAN_LEGACY_MAC_ID);
+		if (!vdev)
+			continue;
+
+		/* Check if this is an MLO vdev with matching device mode */
+		if (!wlan_vdev_mlme_is_mlo_vdev(vdev) ||
+		    vdev->vdev_mlme.vdev_opmode != device_mode) {
+			wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+			continue;
+		}
+
+		/* Only consider standby links from connected STA vdevs */
+		if (device_mode == QDF_STA_MODE &&
+		    !wlan_cm_is_vdev_connected(vdev)) {
+			wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+			continue;
+		}
+
+		/* Get MLO dev context */
+		mlo_dev_ctx = vdev->mlo_dev_ctx;
+		if (!mlo_dev_ctx || !mlo_dev_ctx->link_ctx) {
+			wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+			continue;
+		}
+
+		/* Check all links for standby links */
+		ml_link_info = &mlo_dev_ctx->link_ctx->links_info[0];
+		for (link_iter = 0; link_iter < WLAN_MAX_ML_BSS_LINKS;
+		     link_iter++) {
+			/* Skip unconfigured links */
+			if (qdf_is_macaddr_zero(&ml_link_info->ap_link_addr)) {
+				ml_link_info++;
+				continue;
+			}
+
+			/* Check if this is a STANDBY link (no vdev_id) */
+			if (ml_link_info->vdev_id != WLAN_INVALID_VDEV_ID) {
+				ml_link_info++;
+				continue;
+			}
+
+			/* Check if standby link is in frequency range */
+			if (ml_link_info->link_chan_info &&
+			    ml_link_info->link_chan_info->ch_freq >=
+			    start_freq &&
+			    ml_link_info->link_chan_info->ch_freq <=
+			    end_freq) {
+				wlan_objmgr_vdev_release_ref(vdev,
+							     WLAN_LEGACY_MAC_ID);
+				return ml_link_info->link_chan_info;
+			}
+
+			ml_link_info++;
+		}
+
+		wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+	}
+
+	return NULL;
+}
+
 #endif

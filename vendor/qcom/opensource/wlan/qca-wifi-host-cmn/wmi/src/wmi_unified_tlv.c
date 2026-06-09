@@ -486,6 +486,8 @@ static const uint32_t pdev_param_tlv[] = {
 		  PDEV_PARAM_DSTALL_CONSECUTIVE_TX_NO_ACK_THRESHOLD),
 	PARAM_MAP(pdev_param_disable_lpi_ant_optimization,
 		  PDEV_PARAM_DISABLE_LPI_ANT_OPTIMIZATION),
+	PARAM_MAP(pdev_param_adaptive_early_rx_extra_sleep_slop,
+		  PDEV_PARAM_ADAPTIVE_EARLY_RX_EXTRA_SLEEP_SLOP),
 };
 
 /* Populate vdev_param array whose index is host param, value is target param */
@@ -783,6 +785,10 @@ static const uint32_t vdev_param_tlv[] = {
 		  VDEV_PARAM_DISABLE_LPI_ANT_OPTIMIZATION),
 	PARAM_MAP(vdev_param_disable_scan_start_twt,
 		  VDEV_PARAM_DISABLE_SCAN_START_TWT),
+	PARAM_MAP(vdev_param_cck_support, VDEV_PARAM_CCK_SUPPORT),
+	PARAM_MAP(vdev_param_su_txop_burst_limit_us,
+		  VDEV_PARAM_SU_TXOP_BURST_LIMIT_US),
+
 };
 #endif
 
@@ -1024,7 +1030,7 @@ send_over_wmi:
 	return wmi_unified_cmd_send(wmi_handle, buf, buflen, cmd_id);
 }
 
-#ifdef FEATURE_WLAN_SUPPORT_P2P_R2
+#if defined(FEATURE_WLAN_SUPPORT_P2P_R2) || defined(FEATURE_WLAN_SUPPORT_PCC)
 /**
  * wmi_vdev_add_p2p_mode_tlv() - add P2P mode TLv in VDEV create command
  * @buf_ptr: pointer to TLV buffer
@@ -4266,6 +4272,8 @@ static QDF_STATUS send_peer_assoc_cmd_tlv(wmi_unified_t wmi_handle,
 	cmd->peer_vht_caps = param->peer_vht_caps;
 	cmd->peer_phymode = param->peer_phymode;
 	cmd->bss_max_idle_option = param->peer_bss_max_idle_option;
+	cmd->peer_cck_rx_support_5ghz = param->peer_cck_rx_support_5ghz;
+	cmd->peer_cck_tx_support_5ghz = param->peer_cck_tx_support_5ghz;
 
 	/* Update 11ax capabilities */
 	cmd->peer_he_cap_info =
@@ -4279,7 +4287,6 @@ static QDF_STATUS send_peer_assoc_cmd_tlv(wmi_unified_t wmi_handle,
 	qdf_mem_copy(&cmd->peer_ppet, &param->peer_ppet,
 				sizeof(param->peer_ppet));
 	cmd->peer_he_caps_6ghz = param->peer_he_caps_6ghz;
-
 	/* Update peer legacy rate information */
 	buf_ptr += sizeof(*cmd);
 	WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_BYTE,
@@ -4362,7 +4369,8 @@ static QDF_STATUS send_peer_assoc_cmd_tlv(wmi_unified_t wmi_handle,
 		 "HE cap_info %x ops %x "
 		 "HE cap_info_ext %x "
 		 "HE phy %x  %x  %x  "
-		 "peer_bw_rxnss_override %x",
+		 "peer_bw_rxnss_override %x"
+		 "peer CCK TX/RX: %d/%d",
 		 cmd->vdev_id, cmd->peer_associd, cmd->peer_flags,
 		 cmd->peer_rate_caps, cmd->peer_caps,
 		 cmd->peer_listen_intval, cmd->peer_ht_caps,
@@ -4372,7 +4380,9 @@ static QDF_STATUS send_peer_assoc_cmd_tlv(wmi_unified_t wmi_handle,
 		 cmd->peer_he_ops, cmd->peer_he_cap_info_ext,
 		 cmd->peer_he_cap_phy[0], cmd->peer_he_cap_phy[1],
 		 cmd->peer_he_cap_phy[2],
-		 cmd->peer_bw_rxnss_override);
+		 cmd->peer_bw_rxnss_override,
+		 cmd->peer_cck_tx_support_5ghz,
+		 cmd->peer_cck_rx_support_5ghz);
 
 	buf_ptr = peer_assoc_add_mlo_params(buf_ptr, param);
 
@@ -12299,6 +12309,16 @@ static uint16_t wfa_config_param_len(enum wfa_test_cmds config)
 	else
 		len += WMI_TLV_HDR_SIZE;
 
+	if (config == WFA_CONFIG_OFDMA)
+		len += WMI_TLV_HDR_SIZE + sizeof(wmi_wfa_config_ofdma);
+	else
+		len += WMI_TLV_HDR_SIZE;
+
+	if (config == WFA_CONFIG_ML)
+		len += WMI_TLV_HDR_SIZE + sizeof(wmi_wfa_config_ml);
+	else
+		len += WMI_TLV_HDR_SIZE;
+
 	return len;
 }
 
@@ -12358,6 +12378,8 @@ QDF_STATUS send_wfa_test_cmd_tlv(wmi_unified_t wmi_handle,
 	wmi_wfa_config_csa *csa;
 	wmi_wfa_config_ocv *ocv;
 	wmi_wfa_config_saquery *saquery;
+	wmi_wfa_config_ofdma *ofdma;
+	wmi_wfa_config_ml *ml;
 	wmi_buf_t wmi_buf;
 	uint16_t len = sizeof(*cmd);
 	uint8_t *buf_ptr;
@@ -12432,6 +12454,33 @@ QDF_STATUS send_wfa_test_cmd_tlv(wmi_unified_t wmi_handle,
 
 		saquery = (wmi_wfa_config_saquery *)buf_ptr;
 		saquery->remain_connect_on_saquery_timeout = wmi_wfatest->value;
+	} else {
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC, 0);
+		buf_ptr += WMI_TLV_HDR_SIZE;
+	}
+
+	if (wmi_wfatest->cmd == WFA_CONFIG_OFDMA) {
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC,
+			       sizeof(wmi_wfa_config_ofdma));
+		buf_ptr += WMI_TLV_HDR_SIZE;
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_STRUC_wmi_wfa_config_ofdma,
+			       WMITLV_GET_STRUCT_TLVLEN(wmi_wfa_config_ofdma));
+		ofdma = (wmi_wfa_config_ofdma *)buf_ptr;
+		ofdma->force_he_trigger_to_eht_sta = wmi_wfatest->value;
+	} else {
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC, 0);
+		buf_ptr += WMI_TLV_HDR_SIZE;
+	}
+
+	if (wmi_wfatest->cmd == WFA_CONFIG_ML) {
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC,
+			       sizeof(wmi_wfa_config_ml));
+		buf_ptr += WMI_TLV_HDR_SIZE;
+		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_STRUC_wmi_wfa_config_ml,
+			       WMITLV_GET_STRUCT_TLVLEN(wmi_wfa_config_ml));
+		ml = (wmi_wfa_config_ml *)buf_ptr;
+		ml->force_add_ext_mld_cap_field = wmi_wfatest->value;
+		buf_ptr += sizeof(wmi_wfa_config_ml);
 	} else {
 		WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC, 0);
 		buf_ptr += WMI_TLV_HDR_SIZE;
@@ -24740,6 +24789,8 @@ static void populate_tlv_events_id(WMI_EVT_ID *event_ids)
 #ifdef FEATURE_WLAN_TX_POWERBOOST
 	event_ids[wmi_pdev_power_boost_eventid] = WMI_PDEV_POWER_BOOST_EVENTID;
 #endif
+	event_ids[wmi_cfr_capture_filter_resp_eventid] =
+			WMI_CFR_CAPTURE_FILTER_RESP_EVENTID;
 }
 
 #ifdef WLAN_FEATURE_LINK_LAYER_STATS
@@ -25435,6 +25486,9 @@ static void populate_tlv_service(uint32_t *wmi_service)
 #ifdef FEATURE_WLAN_SUPPORT_P2P_R2
 	wmi_service[wmi_service_wfd_r2] = WMI_SERVICE_WFD_R2;
 #endif
+#ifdef FEATURE_WLAN_SUPPORT_PCC
+	wmi_service[wmi_service_pcc_mode] = WMI_SERVICE_PCC_MODE;
+#endif
 #if defined(FEATURE_WLAN_TDLS) && defined(WLAN_FEATURE_TDLS_NSS_4_4)
 	wmi_service[wmi_service_tdls_nss_confirm_support] =
 				WMI_SERVICE_TDLS_NSS_CONFIRM_SUPPORT;
@@ -25443,6 +25497,14 @@ static void populate_tlv_service(uint32_t *wmi_service)
 	wmi_service[wmi_service_mlo_sap_link_removal_support] =
 				WMI_SERVICE_MLO_SAP_LINK_REMOVAL_SUPPORT;
 #endif
+	wmi_service[wmi_service_cck_rx_support_5g] =
+				WMI_SERVICE_CCK_RX_SUPPORT_5GHZ;
+	wmi_service[wmi_service_cck_tx_support_5g] =
+				WMI_SERVICE_CCK_TX_SUPPORT_5GHZ;
+	wmi_service[wmi_service_cfr_unassoc_rx_capture_support] =
+				WMI_SERVICE_CFR_UNASSOC_RX_CAPTURE_SUPPORT;
+	wmi_service[wmi_service_cfr_assoc_tx_capture_support] =
+				WMI_SERVICE_CFR_ASSOC_TX_CAPTURE_SUPPORT;
 }
 
 /**

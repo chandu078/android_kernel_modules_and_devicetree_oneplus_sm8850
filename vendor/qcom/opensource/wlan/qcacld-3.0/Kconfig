@@ -1444,6 +1444,14 @@ config WLAN_FASTPATH
 	bool "Enable fastpath for datapackets"
 	default n
 
+config WLAN_FASTPATH_NON_RHINE
+	bool "Enable fastpath for non-Rhine chipsets"
+	depends on WLAN_FASTPATH && !RHINE
+	default y if WLAN_FASTPATH && !RHINE
+	help
+	  Enable fastpath compilation only when CONFIG_WLAN_FASTPATH is enabled
+	  and CONFIG_RHINE is NOT enabled.
+
 config WLAN_FASTPATH_LEGACY
 	bool "WLAN_FASTPATH_LEGACY"
 	default n
@@ -1526,6 +1534,10 @@ config WLAN_FEATURE_DP_EVENT_HISTORY
 
 config WLAN_FEATURE_DP_MON_STATUS_RING_HISTORY
 	bool "Enable WLAN_FEATURE_DP_MON_STATUS_RING_HISTORY"
+	default n
+
+config WLAN_FEATURE_DP_MON_DEST_RING_HISTORY
+	bool "Enable WLAN_FEATURE_DP_MON_DEST_RING_HISTORY"
 	default n
 
 config DP_TX_MON_BUF_RING_HISTORY
@@ -2519,6 +2531,10 @@ config FEATURE_WLAN_SUPPORT_P2P_R2
 	bool "enable FEATURE_WLAN_SUPPORT_P2P_R2"
 	default n
 
+config FEATURE_WLAN_SUPPORT_PCC
+	bool "enable FEATURE_WLAN_SUPPORT_PCC"
+	default n
+
 config WLAN_SUPPORT_BCAST_TWT
 	bool "enable WLAN_SUPPORT_BCAST_TWT"
 	default n
@@ -2979,4 +2995,16 @@ config QCACLD_FEATURE_COEX_CONFIG
 config IPA_P2P_SUPPORT
 	bool "support p2p when IPA is enabled"
 	default n
+
+config DRIVER_PASSTHRU_MODE
+	bool "Enable Driver Passthrough mode"
+	default n
+
+config WONDER_SUPPORT
+	bool "Enable Wonder support"
+	depends on DRIVER_PASSTHRU_MODE
+	# Backward compatibility: passthru mode historically built wondertap pieces.
+	# Products can override to 'n' explicitly when passthru is enabled.
+	default y
+
 endif # QCA_CLD_WLAN

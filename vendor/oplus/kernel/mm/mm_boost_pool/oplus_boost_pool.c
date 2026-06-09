@@ -27,6 +27,7 @@
 #include <uapi/linux/sched/types.h>
 
 #include "oplus_boost_pool.h"
+#include "mm_osvelte/mm-config.h"
 
 #define MAX_BOOST_POOL_HIGH (1024 * 256)
 
@@ -1145,6 +1146,13 @@ struct dynamic_boost_pool *dynamic_boost_pool_create_pack(void)
 {
 	struct dynamic_boost_pool *boost_pool = NULL;
 	struct proc_dir_entry *boost_root_dir;
+	struct config_oplus_boost_pool *bp_config;
+
+	bp_config = oplus_read_mm_config(module_name_boost_pool);
+	if (bp_config && !bp_config->enable) {
+		pr_info("%s is disabled in config\n", module_name_boost_pool);
+		return NULL;
+	}
 
 	boost_root_dir = proc_mkdir("boost_pool", NULL);
 	if (!IS_ERR_OR_NULL(boost_root_dir)) {

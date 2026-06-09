@@ -102,7 +102,11 @@ static inline struct synx_coredata *synx_util_obtain_object(
 
 /* global/local map functions */
 struct synx_map_entry *synx_util_insert_to_map(struct synx_coredata *synx_obj,
-			u32 h_synx, u32 flags, bool map_entry_can_exist);
+// #ifdef OPLUS_FEATURE_CAMERA_COMMON
+			u32 h_synx, u32 flags, bool map_entry_can_exist, bool may_sleep);
+// #else
+//			u32 h_synx, u32 flags, bool map_entry_can_exist)
+// #endif
 struct synx_map_entry *synx_util_get_map_entry(u32 h_synx);
 void synx_util_release_map_entry(struct synx_map_entry *map_entry);
 void synx_util_destroy_map_entry(struct kref *kref);
@@ -146,7 +150,11 @@ void synx_util_cb_dispatch(struct work_struct *cb_dispatch);
 
 /* external fence functions */
 int synx_util_activate(struct synx_coredata *synx_obj);
-int synx_util_add_callback(struct synx_coredata *synx_obj, u32 h_synx);
+// #ifdef OPLUS_FEATURE_CAMERA_COMMON
+int synx_util_add_callback(struct synx_coredata *synx_obj, u32 h_synx, bool may_sleep);
+// #else
+// int synx_util_add_callback(struct synx_coredata *synx_obj, u32 h_synx);
+// #endif
 int synx_dma_add_cb_no_enable_sig(struct dma_fence *fence,
 	struct dma_fence_cb *cb, dma_fence_func_t func);
 

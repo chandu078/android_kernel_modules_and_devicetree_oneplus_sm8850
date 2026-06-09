@@ -1552,4 +1552,3 @@ void oplus_bl_ic_ktz8868_power_off(struct dsi_panel *panel)
 			panel->name, rc);
 	}
 }
-

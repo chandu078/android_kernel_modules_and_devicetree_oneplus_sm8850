@@ -225,6 +225,7 @@ bool is_heavy_load_top_task(struct task_struct *p)
 }
 
 struct ux_sched_cputopo ux_sched_cputopo;
+bool global_less_prime_cpu_arch;
 
 static inline void sched_init_ux_cputopo(void)
 {
@@ -328,6 +329,25 @@ static void build_oplus_cpu_array(void)
 }
 #endif
 
+inline bool is_less_prime_cpu_arch(void)
+{
+	unsigned int sliver_cpus = 0;
+	unsigned int total_cpus = 0;
+	int i;
+	bool ret = false;
+
+	for (i = 0; i < ux_sched_cputopo.cls_nr; i++) {
+		if (i == 0) {
+			sliver_cpus = cpumask_weight(&ux_sched_cputopo.sched_cls[i].cpus);
+		}
+		total_cpus += cpumask_weight(&ux_sched_cputopo.sched_cls[i].cpus);
+	}
+	/* The number of small cpus at least two more than that of prime cpus */
+	ret = sliver_cpus >= (total_cpus - sliver_cpus + 4);
+
+	return ret;
+}
+
 void update_ux_sched_cputopo(void)
 {
 	unsigned long cpu_cap = 0;
@@ -387,6 +407,8 @@ void update_ux_sched_cputopo(void)
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_LOADBALANCE)
 	build_oplus_cpu_array();
 #endif
+
+	global_less_prime_cpu_arch = is_less_prime_cpu_arch();
 }
 EXPORT_SYMBOL(update_ux_sched_cputopo);
 
@@ -1524,11 +1546,7 @@ void adjust_rt_lowest_mask(struct task_struct *p, struct cpumask *local_cpu_mask
 				trace_printk("clear cpu from lowestmask, curr_heavy task=%-12s pid=%d drop_cpu=%d\n", task->comm, task->pid, drop_cpu);
 		}
 
-#ifdef CONFIG_OPLUS_SCHED_MT6895
 		if (ux_task_state & SA_TYPE_HEAVY) {
-#else
-		if (sched_assist_scene(SA_LAUNCH) && (ux_task_state & SA_TYPE_HEAVY)) {
-#endif
 			cpumask_clear_cpu(drop_cpu, local_cpu_mask);
 			if (unlikely(global_debug_enabled & DEBUG_FTRACE))
 				trace_printk("clear cpu from lowestmask, curr_heavy task=%-12s pid=%d drop_cpu=%d\n", task->comm, task->pid, drop_cpu);

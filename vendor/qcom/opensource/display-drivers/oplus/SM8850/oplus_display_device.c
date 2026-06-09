@@ -117,6 +117,8 @@ static const struct panel_ioctl_desc panel_ioctls[] = {
 	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_DYNAMIC_FLOAT_TE, oplus_display_panel_set_dynamic_float_te),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_DYNAMIC_FLOAT_TE, oplus_display_panel_get_dynamic_float_te_state),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_PRINT_XLOG, oplus_display_panel_print_xlog),
+	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_LOW_PWM_AOD, oplus_ofp_set_low_pwm_aod_mode),
+	//PANEL_IOCTL_DEF(PANEL_IOCTL_GET_LOW_PWM_AOD, oplus_ofp_get_low_pwm_aod_mode),
 };
 
 int oplus_display_fix_apollo_level(void)

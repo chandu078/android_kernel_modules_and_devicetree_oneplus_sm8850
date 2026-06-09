@@ -209,6 +209,11 @@ static long driver_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return ret;
 	}
 
+	if (!capable(CAP_SYS_ADMIN)) {
+		DISPCAP_LOGE("Permission denied for DISPCAP_CTL_SET_CAPTURE_RECT\n");
+		return -EPERM;
+	}
+
 	switch (cmd) {
 		case DISPCAP_CTL_SET_CAPTURE_RECT: {
 				struct disp_capture_rect rect;

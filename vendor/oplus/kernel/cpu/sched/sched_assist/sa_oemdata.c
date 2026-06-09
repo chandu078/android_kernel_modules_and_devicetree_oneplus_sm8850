@@ -82,6 +82,8 @@ void android_vh_dup_task_struct_handler(void *unused,
 	smp_mb();
 
 	set_oplus_task_struct(tsk, ots);
+
+	sched_setaffinity_tracking(tsk, tsk->cpus_ptr);
 }
 
 void android_vh_free_task_handler(void *unused, struct task_struct *tsk)

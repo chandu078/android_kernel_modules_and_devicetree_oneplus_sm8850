@@ -33,6 +33,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/time.h>
 #include <linux/sched/clock.h>
+#include <linux/pm_wakeup.h>
 
 #include "oplus_sc83107.h"
 #include <oplus_chg_ic.h>
@@ -45,14 +46,20 @@
 #include <oplus_chg_voter.h>
 #include <oplus_mms_wired.h>
 #include <oplus_chg_vooc.h>
+#include <oplus_chg_mutual.h>
+#include <oplus_chg_comm.h>
 
 #define SC83107_DRV_VERSION		"1.1"
 #define SC83107_REGMAX			0x0F
 
 #define SC83107_I2C_RETRY_MAX_COUNT	3	/* I2C retry max count */
+#define SC83107_I2C_STATE		"i2c-state"
+#define SC83107_OUTPUT_LOW_STATE	"output-low-state"
+#define SC83107_I2C_RECOVERY_DELAY_MS	50	/* I2C recovery delay in milliseconds */
 #define SC83107_MODE_AUTO_HYBRID_BP	0
 #define SC83107_MODE_FORCE_BP		1
 #define SC83107_MODE_SET_RETRY_MAX	3
+#define SC83107_UPLOAD_REG_SOC_THRESHOLD 10
 static int sc83107_publish_ic_err_msg(int type, int sub_type, const char *format, ...)
 {
 	va_list args;
@@ -101,8 +108,7 @@ static void sc83107_upload_i2c_err_info(struct sc83107_chip *chip, bool read, s3
 
 	index += scnprintf(buf + index, ERR_MSG_BUF - index,
 		"$$i2c_type@@%s$$err_reg@@0x%x$$err_reason@@%d", read ? "read" : "write", err_info[0], err_info[1]);
-	if (index > 0)
-		buf[index - 1] = 0;
+	/* scnprintf already null-terminates the string, no need to overwrite the last character */
 
 	sc83107_publish_ic_err_msg(OPLUS_IC_ERR_I2C, 0, "%s", buf);
 	kfree(buf);
@@ -116,10 +122,124 @@ static void sc83107_pull_down_int_gpio(struct sc83107_chip *chip)
 	if (gpio_is_valid(chip->irq_gpio)) {
 		/* Configure GPIO as output and set to low */
 		gpio_direction_output(chip->irq_gpio, 0);
+		chip->gpio_pulled_down = true;
 		chg_err("I2C communication failed, pull down INT GPIO %d\n", chip->irq_gpio);
 	} else {
 		chg_err("INT GPIO %d is not valid, cannot pull down\n", chip->irq_gpio);
 	}
+}
+
+static void sc83107_restore_int_gpio(struct sc83107_chip *chip)
+{
+	if (!chip)
+		return;
+
+	/* Only restore if GPIO was previously pulled down */
+	if (chip->gpio_pulled_down && gpio_is_valid(chip->irq_gpio)) {
+		gpio_direction_input(chip->irq_gpio);
+		if (chip->pinctrl && chip->boost_inter_active) {
+			pinctrl_select_state(chip->pinctrl, chip->boost_inter_active);
+		}
+		chip->gpio_pulled_down = false;
+		chg_info("I2C communication recovered, restore INT GPIO %d to input mode\n", chip->irq_gpio);
+	}
+}
+
+/**
+ * @brief Use pinctrl to pull down SCL and SDA for I2C bus reset (synchronous)
+ *
+ * @param chip Pointer to SC83107 chip structure
+ *
+ * @return 0 on success, negative error code on failure
+ *
+ * @note This function synchronously uses the I2C adapter's pinctrl to pull down
+ *       both SCL and SDA lines for 50ms, then restores them to normal I2C state.
+ *       This is used to reset I2C bus when retries fail.
+ *       Note: This function should only be called when i2c_bus_reset_enable is true.
+ *       The caller is responsible for checking the feature enable flag before calling.
+ */
+static int sc83107_i2c_bus_reset(struct sc83107_chip *chip)
+{
+	struct pinctrl *pctrl = NULL;
+	struct pinctrl_state *i2c_state = NULL;
+	struct pinctrl_state *output_low_state = NULL;
+	struct device *adapter_dev = NULL;
+	int ret = 0;
+
+	if (!chip || !chip->client || !chip->client->adapter) {
+		chg_err("Invalid chip or I2C client/adapter\n");
+		return -EINVAL;
+	}
+
+	/* Get the adapter's parent device (platform device) to access its pinctrl
+	 * The pinctrl is configured on the platform device (i2c12 node), not on the adapter device
+	 * From i2c-mt65xx.c: i2c->adap.dev.parent = &pdev->dev, and i2c->pctrl = devm_pinctrl_get(&pdev->dev)
+	 */
+	adapter_dev = chip->client->adapter->dev.parent;
+	if (!adapter_dev) {
+		chg_err("Failed to get adapter parent device (platform device)\n");
+		return -ENODEV;
+	}
+
+	/* Get pinctrl from platform device (same as platform's i2c->pctrl) */
+	pctrl = devm_pinctrl_get(adapter_dev);
+	if (IS_ERR_OR_NULL(pctrl)) {
+		chg_err("Failed to get pinctrl from I2C adapter, rc=%ld\n", PTR_ERR(pctrl));
+		return PTR_ERR(pctrl);
+	}
+
+	/* Lookup I2C state (normal I2C operation) */
+	i2c_state = pinctrl_lookup_state(pctrl, SC83107_I2C_STATE);
+	if (IS_ERR_OR_NULL(i2c_state)) {
+		chg_err("Failed to get pinctrl state: %s, rc=%ld\n", SC83107_I2C_STATE, PTR_ERR(i2c_state));
+		/* devm_pinctrl_get() resources are automatically released by the kernel
+		 * when the device is removed. Do not call devm_pinctrl_put() manually.
+		 */
+		return PTR_ERR(i2c_state);
+	}
+
+	/* Lookup output-low-state (pull down SCL/SDA) */
+	output_low_state = pinctrl_lookup_state(pctrl, SC83107_OUTPUT_LOW_STATE);
+	if (IS_ERR_OR_NULL(output_low_state)) {
+		chg_err("Failed to get pinctrl state: %s, rc=%ld\n", SC83107_OUTPUT_LOW_STATE, PTR_ERR(output_low_state));
+		/* devm_pinctrl_get() resources are automatically released by the kernel
+		 * when the device is removed. Do not call devm_pinctrl_put() manually.
+		 */
+		return PTR_ERR(output_low_state);
+	}
+
+	chg_info("I2C bus reset start: pull down SCL/SDA for %dms\n", SC83107_I2C_RECOVERY_DELAY_MS);
+
+	/* Switch to output-low-state: pull down both SCL and SDA */
+	ret = pinctrl_select_state(pctrl, output_low_state);
+	if (ret < 0) {
+		chg_err("Failed to set pinctrl state: %s, rc=%d\n", SC83107_OUTPUT_LOW_STATE, ret);
+		/* devm_pinctrl_get() resources are automatically released by the kernel
+		 * when the device is removed. Do not call devm_pinctrl_put() manually.
+		 */
+		return ret;
+	}
+
+	/* Wait with SCL/SDA pulled down (synchronous blocking call) */
+	msleep(SC83107_I2C_RECOVERY_DELAY_MS);
+
+	/* Switch back to i2c-state: restore normal I2C operation */
+	ret = pinctrl_select_state(pctrl, i2c_state);
+	if (ret < 0) {
+		chg_err("Failed to set pinctrl state: %s, rc=%d\n", SC83107_I2C_STATE, ret);
+		/* devm_pinctrl_get() resources are automatically released by the kernel
+		 * when the device is removed. Do not call devm_pinctrl_put() manually.
+		 */
+		return ret;
+	}
+
+	chg_info("I2C bus reset completed successfully\n");
+
+	/* devm_pinctrl_get() resources are automatically released by the kernel
+	 * when the device is removed. Do not call devm_pinctrl_put() manually.
+	 */
+
+	return 0;
 }
 
 /********************* Forward declarations *********************/
@@ -148,7 +268,14 @@ static int sc83107_i2c_write_bytes(struct sc83107_chip *chip, uint8_t reg, uint8
 	uint8_t *buf = NULL;
 	int ret = 0;
 	int retry;
+	int reset_ret;
 	struct i2c_client *i2c = chip->client;
+
+	/* Skip I2C operations if system is suspended */
+	if (atomic_read(&chip->suspended)) {
+		chg_info("system suspended, skip I2C write, reg=0x%02x\n", reg);
+		return -EAGAIN;
+	}
 
 	struct i2c_msg msg = {
 		.addr = i2c->addr,
@@ -164,6 +291,8 @@ static int sc83107_i2c_write_bytes(struct sc83107_chip *chip, uint8_t reg, uint8
 	memcpy(&(buf[1]), val, len);
 
 	msg.buf = buf;
+
+	/* First round: retry SC83107_I2C_RETRY_MAX_COUNT times */
 	for (retry = 0; retry < SC83107_I2C_RETRY_MAX_COUNT; retry++) {
 		ret = i2c_transfer(i2c->adapter, &msg, 1);
 		if (ret > 0) {
@@ -171,14 +300,44 @@ static int sc83107_i2c_write_bytes(struct sc83107_chip *chip, uint8_t reg, uint8
 		}
 		/* ret == 0 or ret < 0 means failure, continue retry */
 	}
+
+	/* If first round failed, handle according to I2C bus reset feature status */
 	if (ret <= 0) {
-		chg_err("I2C write failed after %d retries, reg=0x%02x, ret=%d\n",
-			SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
-		/* Pull down INT GPIO when I2C retry fails */
-		sc83107_pull_down_int_gpio(chip);
-		/* Set ret to error code if it's 0 */
-		if (ret == 0)
-			ret = -EIO;
+		/* I2C bus reset feature enabled: reset bus and retry again */
+		if (chip->i2c_bus_reset_enable) {
+			chg_err("I2C write failed after %d retries, reg=0x%02x, ret=%d, attempting I2C bus reset\n",
+				SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			reset_ret = sc83107_i2c_bus_reset(chip);
+			if (reset_ret < 0)
+				chg_err("I2C bus reset failed, rc=%d, but will still retry\n", reset_ret);
+			/* Wait a small delay after reset before retry */
+			msleep(10);
+
+			/* Second round: retry SC83107_I2C_RETRY_MAX_COUNT times after reset */
+			for (retry = 0; retry < SC83107_I2C_RETRY_MAX_COUNT; retry++) {
+				ret = i2c_transfer(i2c->adapter, &msg, 1);
+				if (ret > 0) {
+					chg_info("I2C write succeeded after bus reset, reg=0x%02x\n", reg);
+					break;
+				}
+				/* ret == 0 or ret < 0 means failure, continue retry */
+			}
+			/* If second round also failed, ret still contains the error code from i2c_transfer */
+		}
+		/* Original code path: I2C bus reset feature disabled */
+		if (ret <= 0) {
+			if (chip->i2c_bus_reset_enable)
+				chg_err("I2C write failed after %d retries + reset + %d retries, reg=0x%02x, ret=%d\n",
+					SC83107_I2C_RETRY_MAX_COUNT, SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			else
+				chg_err("I2C write failed after %d retries, reg=0x%02x, ret=%d\n",
+					SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			/* Pull down INT GPIO when I2C retry fails */
+			sc83107_pull_down_int_gpio(chip);
+			/* Set ret to error code if it's 0 */
+			if (ret == 0)
+				ret = -EIO;
+		}
 	}
 	kfree(buf);
 
@@ -207,6 +366,13 @@ static int sc83107_i2c_read_bytes(struct sc83107_chip *chip, uint8_t reg, uint8_
 	uint8_t data = reg;
 	int ret = 0;
 	int retry;
+	int reset_ret;
+
+	/* Skip I2C operations if system is suspended */
+	if (atomic_read(&chip->suspended)) {
+		chg_info("system suspended, skip I2C read, reg=0x%02x\n", reg);
+		return -EAGAIN;
+	}
 
 	struct i2c_msg msg[2] = {
 		{
@@ -222,6 +388,8 @@ static int sc83107_i2c_read_bytes(struct sc83107_chip *chip, uint8_t reg, uint8_
 			.len = len,
 		},
 	};
+
+	/* First round: retry SC83107_I2C_RETRY_MAX_COUNT times */
 	for (retry = 0; retry < SC83107_I2C_RETRY_MAX_COUNT; retry++) {
 		ret = i2c_transfer(i2c->adapter, msg, ARRAY_SIZE(msg));
 		if (ret > 0) {
@@ -229,14 +397,50 @@ static int sc83107_i2c_read_bytes(struct sc83107_chip *chip, uint8_t reg, uint8_
 		}
 		/* ret == 0 or ret < 0 means failure, continue retry */
 	}
+
+	/* If first round failed, handle according to I2C bus reset feature status */
 	if (ret <= 0) {
-		chg_err("I2C read failed after %d retries, reg=0x%02x, ret=%d\n",
-			SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
-		/* Pull down INT GPIO when I2C retry fails */
-		sc83107_pull_down_int_gpio(chip);
-		/* Set ret to error code if it's 0 */
-		if (ret == 0)
-			ret = -EIO;
+		/* I2C bus reset feature enabled: reset bus and retry again (skip for reg 0x81) */
+		if (reg != 0x81 && chip->i2c_bus_reset_enable) {
+			chg_err("I2C read failed after %d retries, reg=0x%02x, ret=%d, attempting I2C bus reset\n",
+				SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			reset_ret = sc83107_i2c_bus_reset(chip);
+			if (reset_ret < 0)
+				chg_err("I2C bus reset failed, rc=%d, but will still retry\n", reset_ret);
+			/* Wait a small delay after reset before retry */
+			msleep(10);
+
+			/* Second round: retry SC83107_I2C_RETRY_MAX_COUNT times after reset */
+			for (retry = 0; retry < SC83107_I2C_RETRY_MAX_COUNT; retry++) {
+				ret = i2c_transfer(i2c->adapter, msg, ARRAY_SIZE(msg));
+				if (ret > 0) {
+					chg_info("I2C read succeeded after bus reset, reg=0x%02x\n", reg);
+					break;
+				}
+				/* ret == 0 or ret < 0 means failure, continue retry */
+			}
+			/* If second round also failed, ret still contains the error code from i2c_transfer */
+		}
+		/* Original code path: I2C bus reset feature disabled or reg 0x81 */
+		if (ret <= 0) {
+			if (reg != 0x81 && chip->i2c_bus_reset_enable)
+				chg_err("I2C read failed after %d retries + reset + %d retries, reg=0x%02x, ret=%d\n",
+					SC83107_I2C_RETRY_MAX_COUNT, SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			else
+				chg_err("I2C read failed after %d retries, reg=0x%02x, ret=%d\n",
+					SC83107_I2C_RETRY_MAX_COUNT, reg, ret);
+			/* Pull down INT GPIO when I2C retry fails, except for reg 0x81
+			 * which is not readable before writing key
+			 */
+			if (reg != 0x81)
+				sc83107_pull_down_int_gpio(chip);
+			/* Set ret to error code if it's 0 */
+			if (ret == 0)
+				ret = -EIO;
+		}
+	} else {
+		/* I2C read succeeded, check and restore GPIO if it was pulled down */
+		sc83107_restore_int_gpio(chip);
 	}
 
 	return ret > 0 ? 0 : ret;
@@ -247,6 +451,23 @@ static int sc83107_i2c_write_byte(struct sc83107_chip *chip, uint8_t reg, uint8_
 	int ret;
 	s32 err_info[2] = { 0 };
 	ret = sc83107_i2c_write_bytes(chip, reg, 1, &val);
+
+	/* Double check: only filter -EAGAIN if system is suspended */
+	if (ret == -EAGAIN) {
+		if (atomic_read(&chip->suspended)) {
+			/* Suspend caused -EAGAIN, don't upload error */
+			chg_info("I2C write skipped due to suspend, reg=0x%02x\n", reg);
+			return ret;
+		}
+		/* -EAGAIN but not suspended, this is a real error, upload it */
+		chg_err("I2C write returned -EAGAIN but not in suspend state, reg=0x%02x\n", reg);
+		err_info[0] = reg;
+		err_info[1] = ret;
+		sc83107_upload_i2c_err_info(chip, false, err_info);
+		return ret;
+	}
+
+	/* Upload other errors normally */
 	if (ret < 0) {
 		err_info[0] = reg;
 		err_info[1] = ret;
@@ -260,6 +481,23 @@ static int sc83107_i2c_read_byte(struct sc83107_chip *chip, uint8_t reg, uint8_t
 	int ret;
 	s32 err_info[2] = { 0 };
 	ret = sc83107_i2c_read_bytes(chip, reg, 1, val);
+
+	/* Double check: only filter -EAGAIN if system is suspended */
+	if (ret == -EAGAIN) {
+		if (atomic_read(&chip->suspended)) {
+			/* Suspend caused -EAGAIN, don't upload error */
+			chg_info("I2C read skipped due to suspend, reg=0x%02x\n", reg);
+			return ret;
+		}
+		/* -EAGAIN but not suspended, this is a real error, upload it */
+		chg_err("I2C read returned -EAGAIN but not in suspend state, reg=0x%02x\n", reg);
+		err_info[0] = reg;
+		err_info[1] = ret;
+		sc83107_upload_i2c_err_info(chip, true, err_info);
+		return ret;
+	}
+
+	/* Upload other errors normally */
 	if (ret < 0) {
 		err_info[0] = reg;
 		err_info[1] = ret;
@@ -310,7 +548,10 @@ static int sc83107_field_write(struct sc83107_chip *chip,
 
 out:
 	if (ret < 0) {
-		chg_err("sc83107 write field %d fail: %d\n", field_id, ret);
+		/* Only print error if not suspended (suspend returns -EAGAIN) */
+		if (ret != -EAGAIN || !atomic_read(&chip->suspended))
+			chg_err("sc83107 write field %d fail: %d\n", field_id, ret);
+		/* Don't print log for suspend-induced -EAGAIN to avoid excessive logging */
 	}
 	return ret;
 }
@@ -589,7 +830,7 @@ static int sc83107_mode_set(struct sc83107_chip *chip, uint8_t mode)
 		/* Upload track data for abnormal auto mode entry failure */
 		if (!chip->track_upload_pending) {
 			chip->track_upload_pending = true;
-			schedule_work(&chip->track_upload_work);
+			schedule_delayed_work(&chip->track_upload_work, 0);
 			chg_err("scheduled track upload work for auto mode entry failure\n");
 		}
 
@@ -647,7 +888,9 @@ static int sc83107_hybrid_output_vol_set(struct sc83107_chip *chip, uint32_t mv)
 
 	reg_val = (mv - SC83107_HYBRID_VOL_OFFSET) / SC83107_HYBRID_VOL_STEP_SIZE;
 
-	chg_err("set cv , reg = 0x%x, mv = %d\n", reg_val, mv);
+	/* Only print log when not suspended to avoid excessive logging during suspend/resume */
+	if (!atomic_read(&chip->suspended))
+		chg_info("set cv , reg = 0x%x, mv = %d\n", reg_val, mv);
 
 	return sc83107_field_write(chip, F_VREG, reg_val);
 }
@@ -1334,8 +1577,11 @@ static int sc83107_track_upload_cp_err_info(struct sc83107_chip *chip, int err_f
 	static int pre_upload_time = 0;
 	char temp_str[REASON_LENGTH_MAX] = {0};
 	struct oplus_mms *err_topic;
+	struct oplus_mms *comm_topic = NULL;
 	struct mms_msg *msg = NULL;
 	int rc = 0;
+	int ui_soc = -1;
+	union mms_msg_data data_soc = { 0 };
 
 	if (NULL == chip) {
 		chg_err("chip is NULL");
@@ -1372,11 +1618,93 @@ static int sc83107_track_upload_cp_err_info(struct sc83107_chip *chip, int err_f
 		REASON_LENGTH_MAX - index,
 		"$$err_position@@%s", "main");
 
+	/* Get UI SOC for track */
+	comm_topic = oplus_mms_get_by_name("common");
+	if (comm_topic) {
+		if (oplus_mms_get_item_data(comm_topic, COMM_ITEM_UI_SOC, &data_soc, false) == 0) {
+			ui_soc = data_soc.intval;
+			index += scnprintf(&(temp_str[index]),
+				REASON_LENGTH_MAX - index,
+				"$$ui_soc@@%d", ui_soc);
+		}
+	}
+
 	msg = oplus_mms_alloc_str_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
 		ERR_ITEM_ERR_PHY_CP_INFO, temp_str);
 	if (msg == NULL) {
 		chg_err("alloc msg error\n");
 		return -EINVAL;
+	}
+	rc = oplus_mms_publish_msg_sync(err_topic, msg);
+	if (rc < 0) {
+		chg_err("publish msg error, rc=%d\n", rc);
+		kfree(msg);
+	}
+
+	return 0;
+}
+
+static int sc83107_upload_dischg_boost_err_flag_track(struct sc83107_chip *chip,
+						      unsigned int err_flag,
+						      u8 reg08_val, u8 reg09_val, u8 reg0a_val)
+{
+	int index = 0;
+	int curr_time;
+	static int upload_count = 0;
+	static int pre_upload_time = 0;
+	char temp_str[REASON_LENGTH_MAX] = {0};
+	struct oplus_mms *err_topic;
+	struct mms_msg *msg = NULL;
+	int rc = 0;
+
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+
+	err_topic = oplus_mms_get_by_name("error");
+	if (!err_topic) {
+		chg_err("error topic not found\n");
+		return -ENODEV;
+	}
+
+	curr_time = sc83107_track_get_local_time_s();
+	if (curr_time - pre_upload_time > TRACK_DEVICE_ABNORMAL_UPLOAD_PERIOD)
+		upload_count = 0;
+
+	if (upload_count > TRACK_UPLOAD_COUNT_MAX) {
+		chg_info("dischg_boost_err_flag upload_count = %d > max %d, should return\n",
+			 upload_count, TRACK_UPLOAD_COUNT_MAX);
+		return 0;
+	}
+
+	upload_count++;
+	pre_upload_time = sc83107_track_get_local_time_s();
+
+	index += scnprintf(&(temp_str[index]), REASON_LENGTH_MAX - index, "$$device_id@@%s", "sc83107");
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index, "$$err_scene@@sc83107_dischg_boost_err");
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index,
+		"$$err_reason@@0x%08X", err_flag);
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index,
+		"$$reg08@@0x%02X", reg08_val);
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index,
+		"$$reg09@@0x%02X", reg09_val);
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index,
+		"$$reg0a@@0x%02X", reg0a_val);
+	index += scnprintf(&(temp_str[index]),
+		REASON_LENGTH_MAX - index,
+		"$$err_position@@%s", "main");
+
+	msg = oplus_mms_alloc_str_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
+		ERR_ITEM_ERR_PHY_CP_INFO, temp_str);
+	if (msg == NULL) {
+		chg_err("alloc msg error\n");
+		return -ENOMEM;
 	}
 	rc = oplus_mms_publish_msg_sync(err_topic, msg);
 	if (rc < 0) {
@@ -1462,70 +1790,78 @@ static int sc83107_mask_set(struct sc83107_chip *chip, enum sc83107_mask_type ma
 	return ret;
 }
 
-static int sc83107_check_register_and_upload_track(struct sc83107_chip *chip)
+static int sc83107_check_register_and_upload_track(struct sc83107_chip *chip,
+						     uint8_t reg09_val, uint8_t reg0a_val)
 {
 	int ret = 0;
-	uint8_t reg09_val = 0;
-	uint8_t reg0a_val = 0;
 	unsigned int err_flag = 0;
+	uint8_t local_reg09_val = reg09_val;
+	uint8_t local_reg0a_val = reg0a_val;
 
 	if (!chip)
 		return -EINVAL;
 
-	/* Read register 0x09 */
-	ret = sc83107_i2c_read_byte(chip, 0x09, &reg09_val);
-	if (ret < 0) {
-		chg_err("Failed to read register 0x09: %d\n", ret);
-		return ret;
+	/* If flag register values are not provided (0xFF means not provided),
+	 * read them from the chip
+	 */
+	if (reg09_val == 0xFF) {
+		ret = sc83107_i2c_read_byte(chip, 0x09, &local_reg09_val);
+		if (ret < 0) {
+			chg_err("Failed to read register 0x09: %d\n", ret);
+			return ret;
+		}
 	}
 
-	/* Read register 0x0A */
-	ret = sc83107_i2c_read_byte(chip, 0x0A, &reg0a_val);
-	if (ret < 0) {
-		chg_err("Failed to read register 0x0A: %d\n", ret);
-		return ret;
+	if (reg0a_val == 0xFF) {
+		ret = sc83107_i2c_read_byte(chip, 0x0A, &local_reg0a_val);
+		if (ret < 0) {
+			chg_err("Failed to read register 0x0A: %d\n", ret);
+			return ret;
+		}
 	}
 
-	chg_info("%s: reg09_val=0x%02x, reg0a_val=0x%02x\n", __func__, reg09_val, reg0a_val);
+	/* Use the flag register values (either provided or read) */
+
+	chg_info("%s: reg09_val=0x%02x, reg0a_val=0x%02x\n", __func__, local_reg09_val, local_reg0a_val);
 
 	/* Record error bit to err_flag */
-	if (reg09_val & SC83107_POR_FLAG_BIT) {
+	if (local_reg09_val & SC83107_POR_FLAG_BIT) {
 		err_flag |= BIT(SC83107_POR_FLAG);
 		chg_err("detected POR_FLAG\n");
 	}
-	if (reg09_val & SC83107_VBAT_FALLING_FLAG_BIT) {
+	if (local_reg09_val & SC83107_VBAT_FALLING_FLAG_BIT) {
 		err_flag |= BIT(SC83107_VBAT_FALLING_FLAG);
 		chg_err("detected VBAT_FALLING_FLAG\n");
 	}
-	if (reg09_val & SC83107_BST_OCP_FLAG_BIT) {
+	if (local_reg09_val & SC83107_BST_OCP_FLAG_BIT) {
 		err_flag |= BIT(SC83107_BST_OCP_FLAG);
 		chg_err("detected BST_OCP_FLAG\n");
 	}
-	if (reg09_val & SC83107_HOTDIE_FLAG_BIT) {
+	if (local_reg09_val & SC83107_HOTDIE_FLAG_BIT) {
 		err_flag |= BIT(SC83107_HOTDIE_FLAG);
 		chg_err("detected HOTDIE_FLAG\n");
 	}
-	if (reg0a_val & SC83107_PIN_DIAG_FAIL_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_PIN_DIAG_FAIL_FLAG_BIT) {
 		err_flag |= BIT(SC83107_PIN_DIAG_FAIL_FLAG);
 		chg_err("detected PIN_DIAG_FAIL_FLAG\n");
 	}
-	if (reg0a_val & SC83107_Q3_OR_Q6_OCP_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_Q3_OR_Q6_OCP_FLAG_BIT) {
 		err_flag |= BIT(SC83107_Q3Q6_OCP_FLAG);
 		chg_err("detected Q3Q6_OCP_FLAG\n");
 	}
-	if (reg0a_val & SC83107_VOUT_UVP_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_VOUT_UVP_FLAG_BIT) {
 		err_flag |= BIT(SC83107_VOUT_UVP_FLAG);
 		chg_err("detected VOUT_UVP_FLAG\n");
 	}
-	if (reg0a_val & SC83107_BOOST_VOUT_OVP_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_BOOST_VOUT_OVP_FLAG_BIT) {
 		err_flag |= BIT(SC83107_BOOST_VOUT_OVP_FLAG);
 		chg_err("detected SC83107_BOOST_VOUT_OVP_FLAG\n");
 	}
-	if (reg0a_val & SC83107_BPASS_VOUT_OVP_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_BPASS_VOUT_OVP_FLAG_BIT) {
 		err_flag |= BIT(SC83107_BPASS_VOUT_OVP_FLAG);
 		chg_err("detected BPASS_VOUT_OVP_FLAG\n");
 	}
-	if (reg0a_val & SC83107_TSD_FLAG_BIT) {
+	if (local_reg0a_val & SC83107_TSD_FLAG_BIT) {
 		err_flag |= BIT(SC83107_TSD_FLAG);
 		chg_err("detected TSD_FLAG\n");
 	}
@@ -1535,6 +1871,398 @@ static int sc83107_check_register_and_upload_track(struct sc83107_chip *chip)
 		sc83107_track_upload_cp_err_info(chip, err_flag);
 	}
 	return 0;
+}
+
+static int sc83107_dischg_boost_err_flag_obtain_mutual_notifier_call(
+	struct notifier_block *nb, unsigned long param, void *v)
+{
+	struct sc83107_chip *chip;
+	struct oplus_chg_mutual_notifier *notifier;
+	unsigned int err_flag = 0;
+	u8 reg08_val = 0, reg09_val = 0, reg0a_val = 0;
+	char *str, *token;
+
+	notifier = container_of(nb, struct oplus_chg_mutual_notifier, nb);
+	chip = container_of(notifier, struct sc83107_chip, dischg_boost_err_flag_mutual);
+
+	if (mutual_info_to_cmd(param) != CMD_DISCHG_BOOST_ERR_OBTAIN) {
+		/* This is normal - all registered notifiers are called, only matching ones process */
+		return NOTIFY_OK;
+	}
+
+	if (mutual_info_to_data_size(param) != sizeof(chip->dischg_boost_err_flag_data)) {
+		chg_err("data_len is not ok, datas is invalid\n");
+		return NOTIFY_DONE;
+	}
+
+	if (v)
+		memmove(chip->dischg_boost_err_flag_data, v, sizeof(chip->dischg_boost_err_flag_data));
+
+	chip->dischg_boost_err_flag_data[sizeof(chip->dischg_boost_err_flag_data) - 1] = '\0';
+	chg_info("dischg_boost_err_flag_data:%s\n", chip->dischg_boost_err_flag_data);
+
+	/* Parse data format: "dischg_boost_err,0x%08X,0x%02X,0x%02X,0x%02X" */
+	/* Format: err_flag,reg08,reg09,reg0a */
+	str = chip->dischg_boost_err_flag_data;
+	if (!strstr(str, "dischg_boost_err")) {
+		chg_info("no dischg_boost_err tag found\n");
+		return NOTIFY_OK;
+	}
+
+	/* Skip "dischg_boost_err," */
+	token = strstr(str, "dischg_boost_err,");
+	if (!token) {
+		chg_err("invalid format\n");
+		return NOTIFY_OK;
+	}
+	token += strlen("dischg_boost_err,");
+
+	/* Parse err_flag */
+	if (sscanf(token, "0x%x", &err_flag) != 1) {
+		chg_err("failed to parse err_flag\n");
+		return NOTIFY_OK;
+	}
+
+	/* Find next comma */
+	token = strchr(token, ',');
+	if (!token) {
+		chg_err("invalid format: no reg08\n");
+		return NOTIFY_OK;
+	}
+	token++;
+
+	/* Parse reg08 */
+	if (sscanf(token, "0x%hhx", &reg08_val) != 1) {
+		chg_err("failed to parse reg08\n");
+		return NOTIFY_OK;
+	}
+
+	/* Find next comma */
+	token = strchr(token, ',');
+	if (!token) {
+		chg_err("invalid format: no reg09\n");
+		return NOTIFY_OK;
+	}
+	token++;
+
+	/* Parse reg09 */
+	if (sscanf(token, "0x%hhx", &reg09_val) != 1) {
+		chg_err("failed to parse reg09\n");
+		return NOTIFY_OK;
+	}
+
+	/* Find next comma */
+	token = strchr(token, ',');
+	if (!token) {
+		chg_err("invalid format: no reg0a\n");
+		return NOTIFY_OK;
+	}
+	token++;
+
+	/* Parse reg0a */
+	if (sscanf(token, "0x%hhx", &reg0a_val) != 1) {
+		chg_err("failed to parse reg0a\n");
+		return NOTIFY_OK;
+	}
+
+	chg_info("parsed: err_flag=0x%08X, reg08=0x%02X, reg09=0x%02X, reg0a=0x%02X\n",
+		 err_flag, reg08_val, reg09_val, reg0a_val);
+
+	/* If err_flag is not zero, schedule work to upload track in process context
+	 * Note: We cannot call sc83107_upload_dischg_boost_err_flag_track directly here because
+	 * this notifier callback runs in atomic context and sc83107_upload_dischg_boost_err_flag_track
+	 * calls oplus_mms_alloc_str_msg which uses GFP_KERNEL and may sleep.
+	 */
+	if (err_flag != 0) {
+		chg_err("detected error flag from partition: 0x%08X, reg08=0x%02X, reg09=0x%02X, reg0a=0x%02X, schedule work to upload\n",
+			err_flag, reg08_val, reg09_val, reg0a_val);
+		chip->dischg_boost_err_flag = err_flag;
+		chip->dischg_boost_err_reg08_val = reg08_val;
+		chip->dischg_boost_err_reg09_val = reg09_val;
+		chip->dischg_boost_err_reg0a_val = reg0a_val;
+		schedule_work(&chip->dischg_boost_err_flag_upload_work);
+	}
+
+	return NOTIFY_OK;
+}
+
+static int sc83107_dischg_boost_err_flag_mutual_notify_reg(struct sc83107_chip *chip)
+{
+	int rc = 0;
+
+	chip->dischg_boost_err_flag_mutual.name = "dischg_boost_err_obtain";
+	chip->dischg_boost_err_flag_mutual.cmd = CMD_DISCHG_BOOST_ERR_OBTAIN;
+	chip->dischg_boost_err_flag_mutual.nb.notifier_call = sc83107_dischg_boost_err_flag_obtain_mutual_notifier_call;
+	rc = oplus_chg_reg_mutual_notifier(&chip->dischg_boost_err_flag_mutual);
+	if (rc < 0) {
+		chg_err("register dischg boost err flag obtain mutual event notifier error, rc=%d\n", rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+#define DISCHG_BOOST_ERR_FLAG_OBTAIN_DELAY_MS	2000
+#define DISCHG_BOOST_ERR_FLAG_OBTAIN_RETRY_MAX	3
+
+static void sc83107_dischg_boost_err_flag_upload_work_func(struct work_struct *work)
+{
+	struct sc83107_chip *chip = container_of(work, struct sc83107_chip,
+						  dischg_boost_err_flag_upload_work);
+
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return;
+	}
+
+	/* Upload error flag in process context (safe to call functions that may sleep) */
+	if (chip->dischg_boost_err_flag != 0) {
+		chg_info("uploading dischg boost error flag 0x%08X from mutual notifier in process context, reg08=0x%02X, reg09=0x%02X, reg0a=0x%02X\n",
+			 chip->dischg_boost_err_flag, chip->dischg_boost_err_reg08_val,
+			 chip->dischg_boost_err_reg09_val, chip->dischg_boost_err_reg0a_val);
+		sc83107_upload_dischg_boost_err_flag_track(chip, chip->dischg_boost_err_flag,
+							   chip->dischg_boost_err_reg08_val,
+							   chip->dischg_boost_err_reg09_val,
+							   chip->dischg_boost_err_reg0a_val);
+		/* Clear after upload */
+		chip->dischg_boost_err_flag = 0;
+		chip->dischg_boost_err_reg08_val = 0;
+		chip->dischg_boost_err_reg09_val = 0;
+		chip->dischg_boost_err_reg0a_val = 0;
+	}
+}
+
+static void sc83107_get_dischg_boost_err_flag_work_func(struct work_struct *work)
+{
+	struct sc83107_chip *chip = container_of(work, struct sc83107_chip,
+						  get_dischg_boost_err_flag_work.work);
+	int mutual_rc;
+	static int try_count = DISCHG_BOOST_ERR_FLAG_OBTAIN_RETRY_MAX;
+
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return;
+	}
+
+	chg_info("get_dischg_boost_err_flag_work_func: requesting err flag from partition, try_count=%d\n", try_count);
+
+	/* Request AIDL layer to read partition and return data via mutual */
+	mutual_rc = oplus_chg_set_mutual_cmd(CMD_DISCHG_BOOST_ERR_OBTAIN, 0, NULL);
+	if (mutual_rc != CMD_ACK_OK && try_count--) {
+		/* Retry if AIDL service not ready yet */
+		chg_info("AIDL service not ready yet, retry after 2s, remaining=%d\n", try_count);
+		schedule_delayed_work(&chip->get_dischg_boost_err_flag_work, msecs_to_jiffies(2000));
+		return;
+	}
+
+	/* Reset try_count for next time */
+	try_count = DISCHG_BOOST_ERR_FLAG_OBTAIN_RETRY_MAX;
+
+	/* Data will be received in notifier callback */
+	if (mutual_rc == CMD_ACK_OK)
+		chg_info("requested dischg boost err flag from partition successfully\n");
+	else
+		chg_err("failed to get dischg boost err flag from partition, rc=%d\n", mutual_rc);
+}
+
+static void sc83107_get_dischg_boost_err_flag_from_partition(struct sc83107_chip *chip)
+{
+	static bool update = false;
+
+	if (!chip)
+		return;
+
+	if (!update) {
+		update = true;
+		chg_info("schedule get_dischg_boost_err_flag_work, delay=%d ms\n", DISCHG_BOOST_ERR_FLAG_OBTAIN_DELAY_MS);
+		schedule_delayed_work(&chip->get_dischg_boost_err_flag_work,
+				     msecs_to_jiffies(DISCHG_BOOST_ERR_FLAG_OBTAIN_DELAY_MS));
+	} else {
+		chg_info("get_dischg_boost_err_flag_from_partition already called, skip\n");
+	}
+}
+
+static void sc83107_upload_all_registers(struct sc83107_chip *chip,
+					   uint8_t reg09_val, uint8_t reg0a_val,
+					   const char *trigger_source)
+{
+	int ret = 0;
+	uint8_t i = 0;
+	uint8_t data[SC83107_REGMAX + 1] = {0};
+	char *buf = NULL;
+	size_t index = 0;
+	s32 err_info[2] = { 0 };
+	int ui_soc = -1;
+	struct oplus_mms *comm_topic = NULL;
+	union mms_msg_data data_soc = { 0 };
+
+	if (!chip)
+		return;
+
+	/* Read all registers from 0x00 to 0x0F */
+	ret = sc83107_i2c_read_bytes(chip, 0x00, SC83107_REGMAX + 1, data);
+	if (ret < 0) {
+		/* Retry once if first read fails */
+		ret = sc83107_i2c_read_bytes(chip, 0x00, SC83107_REGMAX + 1, data);
+		if (ret < 0) {
+			chg_err("Failed to read all registers [0x00-0x%02x]: %d\n",
+				   SC83107_REGMAX, ret);
+			err_info[0] = SC83107_REGMAX + 1;
+			err_info[1] = ret;
+			sc83107_upload_i2c_err_info(chip, true, err_info);
+			return;
+		}
+	}
+
+	/* Restore flag register values that were saved before reading all registers
+	 * This ensures the uploaded register dump contains the original flag values
+	 * before they were cleared by reading
+	 * Note: For charger plug/unplug events, reg09_val and reg0a_val may be 0xFF
+	 * (not provided), in which case we use the values read from the chip
+	 */
+	if (reg09_val != 0xFF)
+		data[0x09] = reg09_val;
+	if (reg0a_val != 0xFF)
+		data[0x0A] = reg0a_val;
+
+	/* Allocate buffer for register dump string */
+	buf = kzalloc(ERR_MSG_BUF, GFP_KERNEL);
+	if (buf == NULL) {
+		chg_err("Failed to allocate buffer for register dump\n");
+		return;
+	}
+
+	/* Format register values with trigger source identifier */
+	if (trigger_source && trigger_source[0] != '\0') {
+		index += scnprintf(buf + index, ERR_MSG_BUF - index,
+				   "$$trigger_source@@%s$$reg_info@@", trigger_source);
+	} else {
+		index += scnprintf(buf + index, ERR_MSG_BUF - index, "$$reg_info@@");
+	}
+
+	/* Get UI SOC for track */
+	comm_topic = oplus_mms_get_by_name("common");
+	if (comm_topic) {
+		if (oplus_mms_get_item_data(comm_topic, COMM_ITEM_UI_SOC, &data_soc, false) == 0) {
+			ui_soc = data_soc.intval;
+		}
+	}
+
+	/* Format as 0/1/2/3/4/5/6/7/8/9/A/B/C/D/E/F:[...] */
+	index += scnprintf(buf + index, ERR_MSG_BUF - index, "0/1/2/3/4/5/6/7/8/9/A/B/C/D/E/F:[");
+
+	/* Add all register values in array format */
+	for (i = 0; i <= SC83107_REGMAX; i++) {
+		if (i == 0) {
+			index += scnprintf(buf + index, ERR_MSG_BUF - index, "0x%02x", data[i]);
+		} else {
+			index += scnprintf(buf + index, ERR_MSG_BUF - index, ", 0x%02x", data[i]);
+		}
+	}
+	index += scnprintf(buf + index, ERR_MSG_BUF - index, "]");
+
+	/* Add UI SOC information */
+	if (ui_soc >= 0) {
+		index += scnprintf(buf + index, ERR_MSG_BUF - index, "$$ui_soc@@%d", ui_soc);
+	}
+
+	chg_info("Upload all registers (trigger: %s): %s\n",
+		 trigger_source ? trigger_source : "unknown", buf);
+
+	/* Upload register dump via error message */
+	sc83107_publish_ic_err_msg(OPLUS_IC_ERR_CP, 0, "%s", buf);
+
+	kfree(buf);
+}
+
+static void sc83107_comm_subs_callback(struct mms_subscribe *subs,
+					enum mms_msg_type type, u32 id, bool sync)
+{
+	struct sc83107_chip *chip = subs->priv_data;
+	union mms_msg_data data = { 0 };
+	int ui_soc = 0;
+	uint8_t reg09_val = 0;
+	uint8_t reg0a_val = 0;
+	int ret = 0;
+
+	if (!chip)
+		return;
+
+	switch (type) {
+	case MSG_TYPE_ITEM:
+		switch (id) {
+		case COMM_ITEM_BOOT_COMPLETED:
+			chg_info("COMM_ITEM_BOOT_COMPLETED received, trigger get_dischg_boost_err_flag\n");
+			sc83107_get_dischg_boost_err_flag_from_partition(chip);
+			break;
+		case COMM_ITEM_UI_SOC:
+			oplus_mms_get_item_data(chip->comm_topic, id, &data, false);
+			ui_soc = data.intval;
+
+			/* Detect when UI SOC drops to 10% (entering ultra power saving mode)
+			 * This matches the system logic in oplus_chg_comm.c
+			 */
+			if (ui_soc == SC83107_UPLOAD_REG_SOC_THRESHOLD && chip->last_ui_soc > SC83107_UPLOAD_REG_SOC_THRESHOLD) {
+				chg_info("UI SOC dropped to %d%%, entering ultra power saving mode, upload all registers\n",
+					 SC83107_UPLOAD_REG_SOC_THRESHOLD);
+
+				/* Read and save flag registers (0x09 and 0x0A) before they are cleared */
+				ret = sc83107_i2c_read_byte(chip, 0x09, &reg09_val);
+				if (ret < 0) {
+					chg_err("Failed to read register 0x09: %d\n", ret);
+					reg09_val = 0xFF;
+				}
+
+				ret = sc83107_i2c_read_byte(chip, 0x0A, &reg0a_val);
+				if (ret < 0) {
+					chg_err("Failed to read register 0x0A: %d\n", ret);
+					reg0a_val = 0xFF;
+				}
+
+				/* Upload all register values when entering ultra power saving mode */
+				sc83107_upload_all_registers(chip, reg09_val, reg0a_val,
+							     "ultra_power_saving_mode");
+			}
+			chip->last_ui_soc = ui_soc;
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void sc83107_subscribe_comm_topic(struct oplus_mms *topic, void *prv_data)
+{
+	struct sc83107_chip *chip = prv_data;
+	union mms_msg_data data = { 0 };
+
+	chg_info("subscribe comm topic\n");
+	chip->comm_topic = topic;
+	chip->comm_subs =
+		oplus_mms_subscribe(chip->comm_topic, chip,
+				    sc83107_comm_subs_callback, "sc83107");
+	if (IS_ERR_OR_NULL(chip->comm_subs)) {
+		chg_err("subscribe comm topic error, rc=%ld\n",
+			PTR_ERR(chip->comm_subs));
+		return;
+	}
+
+	/* Check if boot already completed */
+	oplus_mms_get_item_data(chip->comm_topic, COMM_ITEM_BOOT_COMPLETED, &data, true);
+	if (data.intval) {
+		chg_info("boot already completed when subscribing, trigger get_dischg_boost_err_flag\n");
+		sc83107_get_dischg_boost_err_flag_from_partition(chip);
+	} else {
+		chg_info("boot not completed yet, will wait for COMM_ITEM_BOOT_COMPLETED event\n");
+	}
+
+	/* Get initial UI SOC */
+	oplus_mms_get_item_data(chip->comm_topic, COMM_ITEM_UI_SOC, &data, true);
+	chip->last_ui_soc = data.intval;
+	chg_info("initial UI SOC: %d%%\n", chip->last_ui_soc);
 }
 
 /********************* ops end *********************/
@@ -1603,10 +2331,20 @@ static int sc83107_init_device(struct sc83107_chip *chip)
 	sc83107_mask_set(chip, SC83107_MASK_PGOOD, 1);
 	sc83107_tonmin1_set(chip, 3);
 	sc83107_tonmin2_set(chip, 3);
+	/* Set INT pull-down effective time to 10s (register 0x03 = 0x64) */
+	ret = sc83107_i2c_write_byte(chip, 0x03, 0x64);
+	if (ret < 0) {
+		chg_err("Failed to set INT deglitch time to 10s, ret=%d\n", ret);
+	} else {
+		chg_info("Set INT pull-down effective time to 10s (reg 0x03 = 0x64)\n");
+	}
 
 	sc83107_mode_set(chip, SC83107_MODE_AUTO_HYBRID_BP);
-	sc83107_check_register_and_upload_track(chip);
-	return sc83107_dump_registers(chip);
+	sc83107_check_register_and_upload_track(chip, 0xFF, 0xFF);
+
+	ret = sc83107_dump_registers(chip);
+
+	return ret;
 };
 
 static int sc83107_parse_dt(struct sc83107_chip *chip, struct device *dev)
@@ -1635,6 +2373,10 @@ static int sc83107_parse_dt(struct sc83107_chip *chip, struct device *dev)
 			return ret;
 		}
 	}
+
+	/* Parse I2C bus reset feature enable flag (optional, default: disabled) */
+	chip->i2c_bus_reset_enable = of_property_read_bool(np, "oplus,sc83107,i2c-bus-reset-enable");
+	chg_info("I2C bus reset feature: %s\n", chip->i2c_bus_reset_enable ? "enabled" : "disabled");
 
 	return 0;
 }
@@ -1738,6 +2480,10 @@ static void sc83107_force_bp_retry_work_func(struct work_struct *work)
 	if (!chip || !chip->force_bp_retry_enabled)
 		return;
 
+	/* Force bypass retry is critical for system recovery, use wakelock to prevent suspend during I2C operations */
+	if (chip->i2c_wake_lock)
+		__pm_wakeup_event(chip->i2c_wake_lock, 500);
+
 	/* Check if still in force bypass mode */
 	ret = sc83107_field_read(chip, F_FORCE_BP, &force_bp);
 	if (ret < 0) {
@@ -1773,20 +2519,54 @@ static void sc83107_force_bp_retry_work_func(struct work_struct *work)
 
 static void sc83107_track_upload_work_func(struct work_struct *work)
 {
-	struct sc83107_chip *chip = container_of(work, struct sc83107_chip,
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct sc83107_chip *chip = container_of(dwork, struct sc83107_chip,
 						  track_upload_work);
+	uint8_t reg09_val = 0;
+	uint8_t reg0a_val = 0;
+	int ret = 0;
 
 	if (!chip || !chip->track_upload_pending)
 		return;
 
-	sc83107_check_register_and_upload_track(chip);
+	/* Exception interrupt handling is critical, use wakelock to prevent suspend during I2C operations */
+	if (chip->i2c_wake_lock)
+		__pm_wakeup_event(chip->i2c_wake_lock, 500);
+	/* First, read and save flag registers (0x09 and 0x0A) before they are cleared
+	 * These flag registers will be cleared after reading, so we must read them first
+	 * and save the values for later use
+	 */
+	ret = sc83107_i2c_read_byte(chip, 0x09, &reg09_val);
+	if (ret < 0) {
+		chg_err("Failed to read register 0x09: %d\n", ret);
+		reg09_val = 0;
+	}
+
+	ret = sc83107_i2c_read_byte(chip, 0x0A, &reg0a_val);
+	if (ret < 0) {
+		chg_err("Failed to read register 0x0A: %d\n", ret);
+		reg0a_val = 0;
+	}
+
+	/* Check and upload error flags using the saved values
+	 * This prevents the flag registers from being read again and cleared
+	 */
+	sc83107_check_register_and_upload_track(chip, reg09_val, reg0a_val);
+
+	/* Upload all register values when exception interrupt is triggered
+	 * Use the saved flag register values to ensure the uploaded dump
+	 * contains the original flag values before they were cleared
+	 * Mark as "exception_interrupt" to distinguish from charger plug/unplug events
+	 */
+	sc83107_upload_all_registers(chip, reg09_val, reg0a_val, "exception_interrupt");
 
 	chip->track_upload_pending = false;
 }
 
 static void sc83107_irq_handler_work_func(struct work_struct *work)
 {
-	struct sc83107_chip *chip = container_of(work, struct sc83107_chip,
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct sc83107_chip *chip = container_of(dwork, struct sc83107_chip,
 						  irq_handler_work);
 	int ret = 0;
 	int soc = 0;
@@ -1794,6 +2574,10 @@ static void sc83107_irq_handler_work_func(struct work_struct *work)
 
 	if (!chip || !chip->irq_handler_work_pending)
 		return;
+
+	/* Exception interrupt handling is critical, use wakelock to prevent suspend during I2C operations */
+	if (chip->i2c_wake_lock)
+		__pm_wakeup_event(chip->i2c_wake_lock, 500);
 
 	chg_info("process IRQ handler work\n");
 
@@ -1843,14 +2627,14 @@ static irqreturn_t sc83107_irq_handler(int irq, void *data)
 	/* Step 1: Record and upload track data for abnormal interrupt */
 	if (!chip->track_upload_pending) {
 		chip->track_upload_pending = true;
-		schedule_work(&chip->track_upload_work);
+		schedule_delayed_work(&chip->track_upload_work, 0);
 		chg_info("scheduled track upload work for abnormal interrupt\n");
 	}
 
 	/* Step 2: Schedule work to process interrupt logic in process context. */
 	if (!chip->irq_handler_work_pending) {
 		chip->irq_handler_work_pending = true;
-		schedule_work(&chip->irq_handler_work);
+		schedule_delayed_work(&chip->irq_handler_work, 0);
 		chg_info("scheduled IRQ handler work for process context\n");
 	}
 
@@ -1923,11 +2707,25 @@ static void sc83107_charger_plug_work_func(struct work_struct *work)
 	int soc = 0;
 	int ret = 0;
 	uint8_t reg01_val = 0;
+	uint8_t reg09_val = 0;
+	uint8_t reg0a_val = 0;
+	bool charger_present = false;
 	struct votable *work_mode_votable = NULL;
 	int rus_force_bypass = 0;
 
 	if (!chip)
 		return;
+
+	/* Charger plug work is critical, use wakelock to prevent suspend during I2C operations */
+	if (chip->i2c_wake_lock)
+		__pm_wakeup_event(chip->i2c_wake_lock, 500);
+
+	/* Check charger present status */
+	if (chip->wired_topic) {
+		union mms_msg_data data = { 0 };
+		oplus_mms_get_item_data(chip->wired_topic, WIRED_ITEM_PRESENT, &data, false);
+		charger_present = (data.intval != 0);
+	}
 
 	/* Get current battery SOC */
 	soc = sc83107_get_battery_soc(chip);
@@ -1936,7 +2734,28 @@ static void sc83107_charger_plug_work_func(struct work_struct *work)
 		return;
 	}
 
-	chg_info("charger plug event, SOC=%d%%\n", soc);
+	chg_info("charger %s event, SOC=%d%%\n", charger_present ? "plug in" : "plug out", soc);
+
+	/* Read and save flag registers (0x09 and 0x0A) before they are cleared
+	 * These flag registers will be cleared after reading, so we save them first
+	 */
+	ret = sc83107_i2c_read_byte(chip, 0x09, &reg09_val);
+	if (ret < 0) {
+		chg_err("Failed to read register 0x09: %d\n", ret);
+		reg09_val = 0xFF; /* Use 0xFF to indicate not available */
+	}
+
+	ret = sc83107_i2c_read_byte(chip, 0x0A, &reg0a_val);
+	if (ret < 0) {
+		chg_err("Failed to read register 0x0A: %d\n", ret);
+		reg0a_val = 0xFF; /* Use 0xFF to indicate not available */
+	}
+
+	/* Upload all register values when charger plug/unplug event is triggered
+	 * Mark with trigger source to distinguish from exception interrupt
+	 */
+	sc83107_upload_all_registers(chip, reg09_val, reg0a_val,
+				     charger_present ? "charger_plug_in" : "charger_plug_out");
 
 	sc83107_otg_set(chip, 0);
 	sc83107_force_fpwm_set(chip, 0);
@@ -2102,6 +2921,13 @@ static int sc83107_boost_exit(struct oplus_chg_ic_dev *ic_dev)
 		}
 		chip->wired_topic = NULL;
 
+		/* Unsubscribe comm topic */
+		if (chip->comm_subs) {
+			oplus_mms_unsubscribe(chip->comm_subs);
+			chip->comm_subs = NULL;
+		}
+		chip->comm_topic = NULL;
+
 		/* Stop force bypass retry */
 		if (chip->force_bp_retry_enabled) {
 			chip->force_bp_retry_enabled = false;
@@ -2110,15 +2936,17 @@ static int sc83107_boost_exit(struct oplus_chg_ic_dev *ic_dev)
 		/* Cancel track upload work */
 		if (chip->track_upload_pending) {
 			chip->track_upload_pending = false;
-			cancel_work_sync(&chip->track_upload_work);
+			cancel_delayed_work_sync(&chip->track_upload_work);
 		}
 		/* Cancel IRQ handler work */
 		if (chip->irq_handler_work_pending) {
 			chip->irq_handler_work_pending = false;
-			cancel_work_sync(&chip->irq_handler_work);
+			cancel_delayed_work_sync(&chip->irq_handler_work);
 		}
 		/* Cancel charger plug work */
 		cancel_work_sync(&chip->charger_plug_work);
+		/* Cancel dischg boost err flag upload work */
+		cancel_work_sync(&chip->dischg_boost_err_flag_upload_work);
 	}
 
 	return 0;
@@ -2150,10 +2978,18 @@ static int sc83107_boost_set_cv(struct oplus_chg_ic_dev *ic_dev, int vol)
 	chip = oplus_chg_ic_get_priv_data(ic_dev);
 
 	ret = sc83107_hybrid_output_vol_set(chip, vol);
-	if (ret < 0)
-		chg_err("set_cv fail, ret=%d, vol=%d\n", ret, vol);
+	if (ret < 0) {
+		/* Only print error if not suspended (suspend returns -EAGAIN) */
+		if (ret != -EAGAIN || !atomic_read(&chip->suspended))
+			chg_err("set_cv fail, ret=%d, vol=%d\n", ret, vol);
 
-	chg_err("set boost cv = %d\n", vol);
+		/* Don't print log for suspend-induced -EAGAIN to avoid excessive logging */
+		return ret;
+	}
+
+	/* Only print success log when not suspended to avoid excessive logging during suspend/resume */
+	if (!atomic_read(&chip->suspended))
+		chg_info("set boost cv = %d\n", vol);
 
 	return 0;
 }
@@ -2171,9 +3007,11 @@ static int sc83107_boost_enable_otg_mode(struct oplus_chg_ic_dev *ic_dev, bool e
 
 	ret = sc83107_otg_set(chip, en);
 	if (ret < 0)
-		chg_err("set_cv fail, ret=%d, en=%d\n", ret, en);
+		chg_err("set otg mode fail, ret=%d, en=%d\n", ret, en);
+	else
+		chg_info("set otg mode=%d success\n", en);
 
-	return 0;
+	return ret;
 }
 
 static int sc83107_boost_set_work_mode(struct oplus_chg_ic_dev *ic_dev, int mode)
@@ -2188,10 +3026,11 @@ static int sc83107_boost_set_work_mode(struct oplus_chg_ic_dev *ic_dev, int mode
 	chip = oplus_chg_ic_get_priv_data(ic_dev);
 
 	ret = sc83107_mode_set(chip, mode);
-	if (ret < 0)
+	if (ret < 0) {
 		chg_err("set work mode fail, ret=%d, mode=%d\n", ret, mode);
+		return ret;
+	}
 
-	chg_err("set work mode success, mode=%d\n", mode);
 	return 0;
 }
 
@@ -2279,6 +3118,42 @@ static int sc83107_boost_get_cv(struct oplus_chg_ic_dev *ic_dev, int *cv)
 	return 0;
 }
 
+static int sc83107_boost_is_suspend(struct oplus_chg_ic_dev *ic_dev, bool *suspend)
+{
+	struct sc83107_chip *chip;
+
+	if (ic_dev == NULL) {
+		chg_err("oplus_chg_ic_dev is NULL");
+		return -ENODEV;
+	}
+	chip = oplus_chg_ic_get_priv_data(ic_dev);
+
+	if (suspend == NULL) {
+		chg_err("suspend pointer is NULL");
+		return -EINVAL;
+	}
+
+	*suspend = (atomic_read(&chip->suspended) != 0);
+	return 0;
+}
+
+static int sc83107_boost_set_suspend_resume_cv(struct oplus_chg_ic_dev *ic_dev, int suspend_cv, int resume_cv)
+{
+	struct sc83107_chip *chip;
+
+	if (ic_dev == NULL) {
+		chg_err("oplus_chg_ic_dev is NULL");
+		return -ENODEV;
+	}
+	chip = oplus_chg_ic_get_priv_data(ic_dev);
+
+	chip->suspend_cv_mv = suspend_cv;
+	chip->resume_cv_mv = resume_cv;
+	chg_info("set suspend_cv=%d, resume_cv=%d\n", suspend_cv, resume_cv);
+
+	return 0;
+}
+
 static void *sc83107_boost_get_func(struct oplus_chg_ic_dev *ic_dev, enum oplus_chg_ic_func func_id)
 {
 	void *func = NULL;
@@ -2319,6 +3194,12 @@ static void *sc83107_boost_get_func(struct oplus_chg_ic_dev *ic_dev, enum oplus_
 		break;
 	case OPLUS_IC_FUNC_BOOST_GET_CV:
 		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_BOOST_GET_CV, sc83107_boost_get_cv);
+		break;
+	case OPLUS_IC_FUNC_BOOST_IS_SUSPEND:
+		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_BOOST_IS_SUSPEND, sc83107_boost_is_suspend);
+		break;
+	case OPLUS_IC_FUNC_BOOST_SET_SUSPEND_RESUME_CV:
+		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_BOOST_SET_SUSPEND_RESUME_CV, sc83107_boost_set_suspend_resume_cv);
 		break;
 	default:
 		chg_err("this func(=%d) is not supported\n", func_id);
@@ -2416,28 +3297,41 @@ static int sc83107_charger_probe(struct i2c_client *client,
 
 	chip->dev = &client->dev;
 	chip->client = client;
+	atomic_set(&chip->suspended, 0);
 
 	INIT_WORK(&chip->charger_plug_work, sc83107_charger_plug_work_func);
 	INIT_DELAYED_WORK(&chip->force_bp_retry_work, sc83107_force_bp_retry_work_func);
-	INIT_WORK(&chip->track_upload_work, sc83107_track_upload_work_func);
-	INIT_WORK(&chip->irq_handler_work, sc83107_irq_handler_work_func);
+	INIT_DELAYED_WORK(&chip->track_upload_work, sc83107_track_upload_work_func);
+	INIT_DELAYED_WORK(&chip->irq_handler_work, sc83107_irq_handler_work_func);
+	INIT_DELAYED_WORK(&chip->get_dischg_boost_err_flag_work, sc83107_get_dischg_boost_err_flag_work_func);
+	INIT_WORK(&chip->dischg_boost_err_flag_upload_work, sc83107_dischg_boost_err_flag_upload_work_func);
 	chip->force_bp_retry_enabled = false;
 	chip->track_upload_pending = false;
 	chip->irq_handler_work_pending = false;
+	chip->last_ui_soc = -1; /* Initialize to -1 to detect first UI SOC update */
+	chip->suspend_cv_mv = 0;
+	chip->resume_cv_mv = 0;
+
+	/* Initialize wakelock for critical I2C operations */
+	chip->i2c_wake_lock = wakeup_source_register(chip->dev, "sc83107_i2c_wakeup");
+	if (!chip->i2c_wake_lock)
+		chg_err("Failed to register wakelock\n");
 
 	i2c_set_clientdata(client, chip);
+
+	/* Parse DTS first so that I2C bus reset feature can be enabled before device detection */
+	ret = sc83107_parse_dt(chip, &client->dev);
+	if (ret < 0) {
+		chg_err("parse dt failed(%d)\n", ret);
+		goto err_parse_dt;
+	}
+
 	if (!sc83107_detect_device(chip)) {
 		ret = -ENODEV;
 		goto err_init_device;
 	}
 
 	sc83107_create_device_node(&(client->dev));
-
-	ret = sc83107_parse_dt(chip, &client->dev);
-	if (ret < 0) {
-		chg_err("parse dt failed(%d)\n", ret);
-		goto err_parse_dt;
-	}
 
 	ret = sc83107_register_interrupt(chip);
 	if (ret < 0) {
@@ -2462,18 +3356,29 @@ static int sc83107_charger_probe(struct i2c_client *client,
 	/* Subscribe to wired topic for charger plug events */
 	oplus_mms_wait_topic("wired", sc83107_subscribe_wired_topic, chip);
 
+	/* Subscribe to comm topic for boot completed event */
+	oplus_mms_wait_topic("common", sc83107_subscribe_comm_topic, chip);
+
+	/* Register mutual notifier for reading error flag from partition */
+	ret = sc83107_dischg_boost_err_flag_mutual_notify_reg(chip);
+	if (ret < 0) {
+		chg_err("register dischg boost err flag mutual notifier failed(%d)\n", ret);
+		/* Continue even if registration fails */
+	}
+
 	chg_info("sc83107 probe successfully!\n");
 	return 0;
 
 err_register_irq:
 err_init_device:
 err_parse_dt:
-	devm_kfree(&client->dev, chip);
 	if (chip) {
 		cancel_work_sync(&chip->charger_plug_work);
 		cancel_delayed_work_sync(&chip->force_bp_retry_work);
-		cancel_work_sync(&chip->track_upload_work);
-		cancel_work_sync(&chip->irq_handler_work);
+		cancel_delayed_work_sync(&chip->track_upload_work);
+		cancel_delayed_work_sync(&chip->irq_handler_work);
+		cancel_delayed_work_sync(&chip->get_dischg_boost_err_flag_work);
+		cancel_work_sync(&chip->dischg_boost_err_flag_upload_work);
 	}
 err_kzalloc:
 	chg_err("sc83107 probe fail\n");
@@ -2489,6 +3394,19 @@ static void sc83107_charger_remove(struct i2c_client *client)
 
 	chg_info("enter\n");
 
+	/* Cancel delayed work for getting error flag */
+	cancel_delayed_work_sync(&chip->get_dischg_boost_err_flag_work);
+
+	/* Unsubscribe comm topic */
+	if (chip->comm_subs) {
+		oplus_mms_unsubscribe(chip->comm_subs);
+		chip->comm_subs = NULL;
+	}
+	chip->comm_topic = NULL;
+
+	/* Unregister mutual notifier */
+	oplus_chg_unreg_mutual_notifier(&chip->dischg_boost_err_flag_mutual);
+
 	if (chip->boost_ic)
 		sc83107_boost_exit(chip->boost_ic);
 
@@ -2496,6 +3414,12 @@ static void sc83107_charger_remove(struct i2c_client *client)
 		disable_irq(chip->irq);
 
 	device_remove_file(chip->dev, &dev_attr_registers);
+
+	/* Unregister wakelock */
+	if (chip->i2c_wake_lock) {
+		wakeup_source_unregister(chip->i2c_wake_lock);
+		chip->i2c_wake_lock = NULL;
+	}
 
 	if (gpio_is_valid(chip->irq_gpio))
 		gpio_free(chip->irq_gpio);
@@ -2505,7 +3429,19 @@ static void sc83107_charger_remove(struct i2c_client *client)
 static int sc83107_suspend(struct device *dev)
 {
 	struct sc83107_chip *chip = dev_get_drvdata(dev);
+	int rc;
 
+	/* Set suspend CV before setting suspended flag */
+	if (chip->suspend_cv_mv > 0) {
+		/* I2C bus should still be active at this point, so operation should succeed */
+		rc = sc83107_hybrid_output_vol_set(chip, chip->suspend_cv_mv);
+		if (rc < 0 && rc != -EAGAIN)
+			chg_err("set suspend cv=%d failed, rc=%d\n", chip->suspend_cv_mv, rc);
+		else
+			chg_info("set suspend cv=%d\n", chip->suspend_cv_mv);
+	}
+
+	atomic_set(&chip->suspended, 1);
 	chg_info("Suspend successfully!");
 	if (device_may_wakeup(dev))
 		enable_irq_wake(chip->irq);
@@ -2516,11 +3452,22 @@ static int sc83107_suspend(struct device *dev)
 static int sc83107_resume(struct device *dev)
 {
 	struct sc83107_chip *chip = dev_get_drvdata(dev);
+	int rc;
 
+	atomic_set(&chip->suspended, 0);
 	chg_info("Resume successfully!");
 	if (device_may_wakeup(dev))
 		disable_irq_wake(chip->irq);
 	enable_irq(chip->irq);
+
+	/* Set resume CV after setting suspended flag to 0 */
+	if (chip->resume_cv_mv > 0) {
+		rc = sc83107_hybrid_output_vol_set(chip, chip->resume_cv_mv);
+		if (rc < 0)
+			chg_err("set resume cv=%d failed, rc=%d\n", chip->resume_cv_mv, rc);
+		else
+			chg_info("set resume cv=%d\n", chip->resume_cv_mv);
+	}
 
 	return 0;
 }

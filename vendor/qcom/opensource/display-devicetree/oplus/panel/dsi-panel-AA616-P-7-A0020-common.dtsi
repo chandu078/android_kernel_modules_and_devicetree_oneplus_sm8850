@@ -73,14 +73,6 @@
             39 00 00 40 00 00 04 FF 5A A5 00
             39 00 00 00 00 00 05 51 00 00 01 CA
         ];
-        qcom,mdss-dsi-ultra-low-power-aod-on-command = [
-            39 00 00 40 00 00 04 FF 5A A5 2D
-            39 00 00 00 00 00 02 8A 1D
-        ];
-        qcom,mdss-dsi-ultra-low-power-aod-off-command = [
-            39 00 00 40 00 00 04 FF 5A A5 2D
-            39 00 00 00 00 00 02 8A 00
-        ];
 
         qcom,mdss-dsi-panel-info-switch-page-command-state = "dsi_lp_mode";
         qcom,mdss-dsi-timing-switch-high-fre-command-state = "dsi_hs_mode";

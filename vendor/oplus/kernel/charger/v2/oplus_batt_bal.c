@@ -1094,6 +1094,9 @@ static int oplus_batt_bal_cfg(
 	if (chip->abnormal_state != BATT_BAL_NO_ABNORMAL &&
 	    (pmos_en == true || hw_en == true))
 		return rc;
+
+	oplus_wired_set_supplementary_power_mos(chip->wired_topic, pmos_en);
+
 	mutex_lock(&chip->cfg_lock);
 	if (flow_dir == DEFAULT_DIR) {
 		rc |= oplus_batt_bal_set_hw_enable(chip, hw_en);
@@ -2804,6 +2807,8 @@ static void oplus_batt_bal_online_init_work(struct work_struct *work)
 
 	chip->alarm_curr_status = BAL_ALARM_NONE;
 	oplus_batt_bal_pmos_disable(chip->batt_bal_topic);
+	oplus_wired_set_supplementary_power_mos(chip->wired_topic, false);
+
 	oplus_batt_bal_set_curr_limit(chip, 0);
 	oplus_batt_bal_ic_trig_abnormal_clear_work(&(chip->ic_trig_abnormal_clear_work.work));
 }
@@ -2814,6 +2819,7 @@ static void oplus_batt_bal_charging_init_work(struct work_struct *work)
 		batt_bal_charging_init_work);
 
 	oplus_batt_bal_pmos_disable(chip->batt_bal_topic);
+	oplus_wired_set_supplementary_power_mos(chip->wired_topic, false);
 }
 
 static void oplus_batt_bal_disable_bal_work(struct work_struct *work)
@@ -2977,8 +2983,10 @@ static void oplus_batt_bal_subscribe_wired_topic(struct oplus_mms *topic,
 
 	oplus_mms_get_item_data(chip->wired_topic, WIRED_ITEM_ONLINE, &data, true);
 	chip->wired_online = !!data.intval;
-	if (chip->wired_online)
+	if (chip->wired_online) {
 		oplus_batt_bal_set_pmos_enable(chip, false);
+		oplus_wired_set_supplementary_power_mos(chip->wired_topic, false);
+	}
 	chg_info("wired_online:%d\n", chip->wired_online);
 
 	if (chip->wired_online || chip->wired_charging_enable) {
@@ -3264,8 +3272,10 @@ static void oplus_batt_bal_subscribe_wls_topic(struct oplus_mms *topic,
 
 	oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_ONLINE, &data, true);
 	chip->wls_online = !!data.intval;
-	if (chip->wls_online)
+	if (chip->wls_online) {
 		oplus_batt_bal_set_pmos_enable(chip, false);
+		oplus_wired_set_supplementary_power_mos(chip->wired_topic, false);
+	}
 	chg_info("wls_online=%d\n", chip->wls_online);
 
 	oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_CHARGING_DISABLE, &data, true);
@@ -3656,6 +3666,8 @@ static int oplus_chg_batt_bal_pm_suspend(struct device *dev)
 	status = oplus_batt_bal_get_pmos_enable(chip);
 	if (!status && chip->abnormal_state == BATT_BAL_NO_ABNORMAL)
 		oplus_batt_bal_set_pmos_enable(chip, true);
+
+	oplus_wired_set_supplementary_power_mos(chip->wired_topic, true);
 
 	return 0;
 }

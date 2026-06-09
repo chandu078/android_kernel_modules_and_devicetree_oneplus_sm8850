@@ -1600,29 +1600,29 @@ int frame_ioctl_init(void)
 
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_CFBT)
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_GEAS_FDRIVE)
-	pentry = proc_create("cfbt_cx_opt_enable", 0666, frame_boost_proc, &proc_cfbt_cx_opt_enable_fops);
+	pentry = proc_create("cfbt_cx_opt_enable", 0664, frame_boost_proc, &proc_cfbt_cx_opt_enable_fops);
 	if (!pentry)
 		goto ERROR_INIT;
 #endif /* CONFIG_OPLUS_FEATURE_GEAS_FDRIVE */
-	pentry = proc_create("cfbt_select_opt_enable", 0666, frame_boost_proc, &proc_cfbt_select_opt_enable_fops);
+	pentry = proc_create("cfbt_select_opt_enable", 0664, frame_boost_proc, &proc_cfbt_select_opt_enable_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_debug", 0666, frame_boost_proc, &proc_cfbt_debug_fops);
+	pentry = proc_create("cfbt_debug", 0664, frame_boost_proc, &proc_cfbt_debug_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_enable", 0666, frame_boost_proc, &proc_cfbt_enable_fops);
+	pentry = proc_create("cfbt_enable", 0664, frame_boost_proc, &proc_cfbt_enable_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_suspend", 0666, frame_boost_proc, &proc_cfbt_suspend_fops);
+	pentry = proc_create("cfbt_suspend", 0664, frame_boost_proc, &proc_cfbt_suspend_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_util_down", 0666, frame_boost_proc, &proc_cfbt_util_down_fops);
+	pentry = proc_create("cfbt_util_down", 0664, frame_boost_proc, &proc_cfbt_util_down_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_rescue", 0666, frame_boost_proc, &proc_cfbt_rescue_fops);
+	pentry = proc_create("cfbt_rescue", 0664, frame_boost_proc, &proc_cfbt_rescue_fops);
 	if (!pentry)
 		goto ERROR_INIT;
-	pentry = proc_create("cfbt_scene", 0666, frame_boost_proc, &proc_cfbt_scene_ops);
+	pentry = proc_create("cfbt_scene", 0664, frame_boost_proc, &proc_cfbt_scene_ops);
 	if (!pentry)
 		goto ERROR_INIT;
 #endif /* CONFIG_OPLUS_FEATURE_SCHED_CFBT */

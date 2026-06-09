@@ -211,12 +211,11 @@ int cam_ext_sensor_start_thread(void *arg)
 			if(rc < 0)
 			{
 				CAM_EXT_ERR(CAM_EXT_SENSOR, "write setting failed! retry");
-				CAM_EXT_ERR(CAM_EXT_SENSOR, "setting datacheck rc %d 0x%0x=0x%0x 0x%0x=0x%0x"
-					, rc, s_ctrl->sensor_init_setting.reg_setting[0].reg_addr, s_ctrl->sensor_init_setting.reg_setting[0].reg_data
-					, s_ctrl->sensor_init_setting.reg_setting[1].reg_addr, s_ctrl->sensor_init_setting.reg_setting[1].reg_data);
+				mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
 				usleep_range(1000, 1010);
 				cam_sensor_power_down(s_ctrl);
 				cam_sensor_power_up(s_ctrl);
+				mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
 				if (s_ctrl->is_surpport_wr_continuous == TRUE)
 				{
 					rc = cam_ext_sensor_write_continuous(s_ctrl);

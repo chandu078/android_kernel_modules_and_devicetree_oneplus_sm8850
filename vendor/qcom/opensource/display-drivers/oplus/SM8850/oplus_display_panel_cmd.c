@@ -303,6 +303,8 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"oplus,dsi-panel-apuir-middle-off-command",
 	"oplus,dsi-panel-apuir-off-command",
 #endif /*OPLUS_FEATURE_AP_UIR_DIMMING*/
+	"oplus,dsi-panel-switch-low-pwm-aod-on-command",
+	"oplus,dsi-panel-switch-low-pwm-aod-off-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -586,6 +588,8 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"oplus,dsi-panel-apuir-middle-off-command-state",
 	"oplus,dsi-panel-apuir-off-command-state",
 #endif /*OPLUS_FEATURE_AP_UIR_DIMMING*/
+	"oplus,dsi-panel-switch-low-pwm-aod-on-command-state",
+	"oplus,dsi-panel-switch-low-pwm-aod-off-command-state",
 };
 
 EXPORT_SYMBOL(cmd_set_prop_map);

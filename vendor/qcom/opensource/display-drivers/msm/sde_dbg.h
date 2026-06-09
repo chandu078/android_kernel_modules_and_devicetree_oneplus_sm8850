@@ -231,6 +231,9 @@ struct sde_dbg_evtlog {
 	u32 log_size;
 	spinlock_t spin_lock;
 	struct list_head filter_list;
+#ifdef OPLUS_FEATURE_DISPLAY
+	u32 oplus_print_limit;
+#endif
 };
 
 extern struct sde_dbg_evtlog *sde_dbg_base_evtlog;
@@ -882,6 +885,7 @@ void sde_dbg_update_dump_mode(bool enable_coredump);
 
 #ifdef OPLUS_FEATURE_DISPLAY
 void oplus_sde_evtlog_dump_all(void);
+void oplus_sde_evtlog_dump_limited(u32 max_entries);
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 #endif /* SDE_DBG_H_ */

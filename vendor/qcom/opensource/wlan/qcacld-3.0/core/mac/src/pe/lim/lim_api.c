@@ -2901,10 +2901,12 @@ lim_gen_link_specific_assoc_rsp(struct mac_context *mac_ctx,
 
 		mgmt_txrx_frame_hex_dump(link_reassoc_rsp.ptr,
 					 link_reassoc_rsp.len, false);
-
+		status =
 		lim_process_assoc_rsp_frame(mac_ctx, link_reassoc_rsp.ptr,
 					    link_reassoc_rsp.len, LIM_REASSOC,
 					    session_entry);
+		if (QDF_IS_STATUS_ERROR(status))
+			break;
 	}
 end:
 	qdf_mem_free(link_reassoc_rsp.ptr);
@@ -3260,19 +3262,16 @@ pe_roam_synch_callback(struct mac_context *mac_ctx,
 						ft_session_ptr,
 						reassoc_resp,
 						roam_sync_ind_ptr->reassoc_resp_length);
-		if (ft_session_ptr->is_unexpected_peer_error)
-			status = QDF_STATUS_E_FAILURE;
-
 		if (QDF_IS_STATUS_ERROR(status)) {
 			qdf_mem_free(bss_desc);
 			goto roam_sync_fail;
 		}
 	} else {
+		status =
 		lim_process_assoc_rsp_frame(mac_ctx, reassoc_resp,
 					    roam_sync_ind_ptr->reassoc_resp_length,
 					    LIM_REASSOC, ft_session_ptr);
-		if (ft_session_ptr->is_unexpected_peer_error) {
-			status = QDF_STATUS_E_FAILURE;
+		if (QDF_IS_STATUS_ERROR(status)) {
 			qdf_mem_free(bss_desc);
 			goto roam_sync_fail;
 		}
@@ -3283,7 +3282,10 @@ pe_roam_synch_callback(struct mac_context *mac_ctx,
 	lim_enable_cts_to_self_for_exempted_iot_ap(mac_ctx,
 						   ft_session_ptr,
 						   oui_ie_ptr, oui_ie_len);
+
+	lim_cfg_dsmps_for_iot_ap(mac_ctx, ft_session_ptr, bss_desc, true);
 	lim_set_amsdu_for_2g_oui(mac_ctx, ft_session_ptr, bss_desc);
+
 	qdf_mem_free(bss_desc);
 	oui_ie_len = 0;
 	oui_ie_ptr = NULL;
@@ -3652,7 +3654,8 @@ void lim_mon_deinit_session(struct mac_context *mac_ptr,
 
 	session = pe_find_session_by_vdev_id(mac_ptr, msg->vdev_id);
 
-	if (session && session->bssType == eSIR_MONITOR_MODE) {
+	if (session && (session->bssType == eSIR_MONITOR_MODE ||
+			session->bssType == eSIR_PASSTHRU_MODE)) {
 		wlan_vdev_mlme_sm_deliver_evt(session->vdev,
 					      WLAN_VDEV_SM_EV_DOWN,
 					      0, NULL);
@@ -3929,6 +3932,7 @@ lim_create_and_fill_link_session(struct mac_context *mac_ctx,
 {
 	struct pe_session *pe_session;
 	QDF_STATUS status;
+	struct wlan_objmgr_vdev *vdev;
 
 	if (!mac_ctx)
 		return QDF_STATUS_E_INVAL;
@@ -3943,6 +3947,15 @@ lim_create_and_fill_link_session(struct mac_context *mac_ctx,
 					  pe_session, sync_ind, ie_len);
 	if (QDF_IS_STATUS_ERROR(status))
 		goto fail;
+
+	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(mac_ctx->psoc, vdev_id,
+						    WLAN_LEGACY_MAC_ID);
+	if (!vdev)
+		goto fail;
+
+	/* Update flow pool map as VDEV is not connected before */
+	policy_mgr_update_flow_pool_map(mac_ctx->psoc, vdev);
+	wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
 
 	return QDF_STATUS_SUCCESS;
 
@@ -4093,43 +4106,6 @@ lim_update_cuflag_bpcc_each_link(struct mlo_mgmt_ml_info *cu_params)
 	}
 }
 #endif
-
-void lim_update_omn_ie_ch_width(struct wlan_objmgr_vdev *vdev,
-				enum phy_ch_width ch_width)
-{
-	struct mlme_legacy_priv *mlme_priv;
-
-	mlme_priv = wlan_vdev_mlme_get_ext_hdl(vdev);
-	if (!mlme_priv) {
-		pe_err("vdev legacy private object is NULL");
-		return;
-	}
-
-	mlme_priv->connect_info.assoc_chan_info.cur_ch_width = ch_width;
-	wlan_mlme_update_ch_width_from_ap(mlme_priv, true);
-}
-
-void lim_update_bcn_op_ch_width(struct wlan_objmgr_vdev *vdev,
-				enum phy_ch_width ch_width)
-{
-	struct mlme_legacy_priv *mlme_priv;
-
-	mlme_priv = wlan_vdev_mlme_get_ext_hdl(vdev);
-	if (!mlme_priv) {
-		pe_err("vdev legacy private object is NULL");
-		return;
-	}
-
-	if (mlme_priv->connect_info.assoc_chan_info.cur_ch_width != ch_width) {
-		mlme_priv->connect_info.assoc_chan_info.cur_ch_width = ch_width;
-		wlan_mlme_update_ch_width_from_ap(mlme_priv, true);
-	} else {
-		return;
-	}
-
-	pe_debug("update vdev %d bcn eht/he/vht op chn width %d",
-		 wlan_vdev_get_id(vdev), ch_width);
-}
 
 #ifdef WLAN_FEATURE_11BE_MLO
 static bool
@@ -5016,6 +4992,7 @@ QDF_STATUS lim_process_cu_for_probe_rsp(struct mac_context *mac_ctx,
 	uint8_t *ml_ie = NULL;
 	qdf_size_t ml_ie_total_len = 0;
 	struct mlo_partner_info partner_info;
+	struct mlo_link_info *link_info = NULL;
 	int8_t rssi;
 	uint8_t i, link_id, vdev_id, bpcc, snr, chan, opclass;
 	bool msd_cap_found = false;
@@ -5023,6 +5000,7 @@ QDF_STATUS lim_process_cu_for_probe_rsp(struct mac_context *mac_ctx,
 	qdf_freq_t chan_freq;
 	struct wlan_country_ie *cc_ie;
 	QDF_STATUS status = QDF_STATUS_E_INVAL;
+	struct pe_session *partner_session;
 
 	vdev = session->vdev;
 	if (!vdev || !wlan_vdev_mlme_is_mlo_vdev(vdev))
@@ -5113,6 +5091,11 @@ QDF_STATUS lim_process_cu_for_probe_rsp(struct mac_context *mac_ctx,
 			continue;
 		}
 
+		link_info = &partner_info.partner_link_info[i];
+
+		lim_gen_link_specific_rnr_ie(mac_ctx, session,
+					     link_info, link_probe_rsp);
+
 		lim_add_bcn_probe(mac_ctx->pdev, link_probe_rsp.ptr,
 				  link_probe_rsp.len,
 				  true, chan_freq, rssi, snr, 0);
@@ -5125,9 +5108,10 @@ QDF_STATUS lim_process_cu_for_probe_rsp(struct mac_context *mac_ctx,
 		}
 
 		vdev_id = wlan_vdev_get_id(partner_vdev);
-		session = pe_find_session_by_vdev_id(mac_ctx, vdev_id);
-		if (session) {
-			lim_process_gen_probe_rsp_frame(mac_ctx, session,
+		partner_session = pe_find_session_by_vdev_id(mac_ctx, vdev_id);
+		if (partner_session) {
+			lim_process_gen_probe_rsp_frame(mac_ctx,
+							partner_session,
 							link_probe_rsp.ptr,
 							link_probe_rsp.len);
 		}
@@ -5221,4 +5205,39 @@ void lim_set_amsdu_for_2g_oui(struct mac_context *mac_ctx,
 			wlan_action_oui_search(mac_ctx->psoc, &attr,
 					       ACTION_OUI_ENABLE_AMSDU_2G);
 }
+
+
+#ifdef DRIVER_PASSTHRU_MODE
+void lim_passthrough_init_session(struct mac_context *mac_ptr,
+				  struct sir_create_session *msg)
+{
+	struct pe_session *psession_entry;
+	uint8_t session_id;
+
+	psession_entry = pe_create_session(mac_ptr, msg->bss_id.bytes,
+					   &session_id,
+					   mac_ptr->lim.max_sta_of_pe_session,
+					   eSIR_PASSTHRU_MODE,
+					   msg->vdev_id);
+	if (!psession_entry) {
+		pe_err("Passthrough mode: Session can not be created for: "
+			QDF_MAC_ADDR_FMT, QDF_MAC_ADDR_REF(msg->bss_id.bytes));
+		return;
+	}
+}
+
+void lim_passthrough_deinit_session(struct mac_context *mac_ptr,
+				    struct sir_delete_session *msg)
+{
+	struct pe_session *session;
+
+	session = pe_find_session_by_vdev_id(mac_ptr, msg->vdev_id);
+
+	if (session && LIM_IS_PASSTHRU_ROLE(session)) {
+		wlan_vdev_mlme_sm_deliver_evt(session->vdev,
+					      WLAN_VDEV_SM_EV_DOWN, 0, NULL);
+		pe_delete_session(mac_ptr, session);
+	}
+}
+#endif
 

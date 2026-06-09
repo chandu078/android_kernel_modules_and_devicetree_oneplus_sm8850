@@ -3405,12 +3405,13 @@ dp_rx_peer_map_handler(struct dp_soc *soc, uint16_t peer_id,
 			peer->ast_idx = hw_peer_id;
 			vdev = peer->vdev;
 			/* Only check for STA Vdev and peer is not for TDLS */
-			if (wlan_op_mode_sta == vdev->opmode &&
-			    !peer->is_tdls_peer) {
+			if ((wlan_op_mode_sta == vdev->opmode &&
+			     !peer->is_tdls_peer) ||
+			    vdev->opmode == wlan_op_mode_passthru) {
 				if (qdf_mem_cmp(peer->mac_addr.raw,
 						vdev->mac_addr.raw,
 						QDF_MAC_ADDR_SIZE) != 0) {
-					dp_info("%pK: STA vdev bss_peer", soc);
+					dp_info("%pK: vdev bss_peer", soc);
 					peer->bss_peer = 1;
 					if (peer->txrx_peer)
 						peer->txrx_peer->bss_peer = 1;
@@ -3520,6 +3521,10 @@ dp_rx_peer_unmap_handler(struct dp_soc *soc, uint16_t peer_id,
 	if (!peer) {
 		dp_err("Received unmap event for invalid peer_id %u",
 		       peer_id);
+		dp_cfg_event_record_peer_map_unmap_evt(
+			soc, DP_CFG_EVENT_PEER_UNMAP,
+			NULL, mac_addr, 0, peer_id,
+			0, 0, vdev_id);
 		DP_STATS_INC(soc, t2h_msg_stats.invalid_peer_unmap, 1);
 		return;
 	}

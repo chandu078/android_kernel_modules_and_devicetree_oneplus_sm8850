@@ -633,6 +633,7 @@
 					OPLUS_IC_FUNC_RX_SET_COMU
 					OPLUS_IC_FUNC_RX_GET_TX_ID
 					OPLUS_IC_FUNC_RX_SET_SILENT
+					OPLUS_IC_FUNC_RX_GET_AC_OV_FLAG
 				>;
 				virqs = <
 					OPLUS_IC_VIRQ_ERR
@@ -782,13 +783,16 @@
 		oplus,gauge_stuck_time = <50>;
 
 		oplus_spec,sw_check_full_cnt = <12>;
-		oplus,ui_soc_2_voltage_comp_mv = <30>;
+		oplus,ui_soc_2_voltage_comp_mv = <100>;
+		oplus,ui_soc_3_voltage_comp_mv = <150>;
 		oplus,chg_shutdown_max_mv = <2750>;
 
 		oplus_spec,drop_soc_2_temp_ladder = <(-50) 0 0 0 0 0 0 0 0 0>;
-		oplus_spec,volt_diff_ladder_of_drop_soc_2 = <80 80 0 0 0 0 0 0 0 0>;
+		oplus_spec,volt_diff_ladder_of_drop_soc_2 = <150 150 0 0 0 0 0 0 0 0>;
 		oplus_spec,keep_soc_2_temp_ladder = <(-200) (-50) 0 0 0 0 0 0 0 0>;
-		oplus_spec,volt_diff_ladder_of_keep_soc_2 = <10 20 30 0 0 0 0 0 0 0>;
+		oplus_spec,volt_diff_ladder_of_keep_soc_2 = <80 90 100 0 0 0 0 0 0 0>;
+		oplus_spec,keep_soc_3_temp_ladder = <(-200) (-50) 0 0 0 0 0 0 0 0>;
+		oplus_spec,volt_diff_ladder_of_keep_soc_3 = <130 140 150 0 0 0 0 0 0 0>;
 		oplus_spec,back_rm_of_drop_soc_2 = <37>;
 		oplus_spec,back_rm_of_drop_soc_1 = <0>;
 		oplus_spec,load_current_of_drop_soc_2 = <1500>;

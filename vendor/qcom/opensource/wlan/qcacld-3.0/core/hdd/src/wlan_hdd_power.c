@@ -94,6 +94,7 @@
 #include "son_api.h"
 #include "wlan_hdd_tx_powerboost.h"
 #include "wlan_hdd_ioctl.h"
+#include "wlan_hdd_wondertap.h"
 
 /* Preprocessor definitions and constants */
 #ifdef QCA_WIFI_EMULATION
@@ -1171,6 +1172,9 @@ static void __wlan_hdd_ipv4_changed(struct net_device *net_dev)
 		if (adapter->dhcp_config_setsuspend) {
 			link_info = hdd_get_link_info_by_vdev(hdd_ctx,
 						adapter->deflink->vdev_id);
+			if (!link_info)
+				goto exit;
+
 			hdd_handle_apf_mode_on_idle(hdd_ctx, link_info, 1);
 			adapter->dhcp_config_setsuspend = false;
 		}
@@ -2008,6 +2012,8 @@ QDF_STATUS hdd_wlan_shutdown(void)
 					       QDF_SYSTEM_SUSPEND);
 	}
 
+
+	wlan_hdd_wondertap_unregister_ops(hdd_ctx->parent_dev, true);
 	wlan_hdd_rx_thread_resume(hdd_ctx);
 
 	if (ucfg_pkt_capture_get_mode(hdd_ctx->psoc) !=
@@ -2297,6 +2303,8 @@ QDF_STATUS hdd_wlan_re_init(void)
 
 	if (hdd_ctx->hdd_wlan_suspended)
 		hdd_ctx->hdd_wlan_suspended = false;
+
+	wlan_hdd_wondertap_register_ops(hdd_ctx->parent_dev);
 
 	return QDF_STATUS_SUCCESS;
 
@@ -3007,57 +3015,6 @@ static int wlan_hdd_set_ps(struct wlan_hdd_link_info *link_info,
 	return status;
 }
 
-QDF_STATUS
-hdd_update_send_idle_roam_bitmap(struct wlan_hdd_link_info *link_info,
-				 struct hdd_context *hdd_ctx,
-				 bool enable, uint8_t bit)
-{
-	QDF_STATUS status = QDF_STATUS_SUCCESS;
-	bool ps_bit_set, suspend_bit_set;
-
-	if (enable)
-		qdf_set_bit(bit, link_info->link_idle_roam_bitmap);
-	else
-		qdf_clear_bit(bit, link_info->link_idle_roam_bitmap);
-
-	ps_bit_set = qdf_test_bit(IDLE_ROAM_POWER_SAVE_CMD,
-				  link_info->link_idle_roam_bitmap);
-	suspend_bit_set = qdf_test_bit(IDLE_ROAM_SETSUSPEND_CMD,
-				       link_info->link_idle_roam_bitmap);
-
-	if ((ps_bit_set && suspend_bit_set) &&
-	    !qdf_test_bit(IDLE_ROAM_ENABLED,
-	    link_info->link_idle_roam_bitmap)) {
-		hdd_debug("Both PS and Suspend set, sending enable to FW");
-		status =
-			ucfg_pmo_tgt_psoc_send_idle_roam_suspend_mode(hdd_ctx->psoc,
-								      enable);
-		if (QDF_IS_STATUS_ERROR(status))
-			hdd_err("Failed to send enable idle roam suspend mode to FW, status: %d",
-				status);
-		else
-			qdf_set_bit(IDLE_ROAM_ENABLED,
-				    link_info->link_idle_roam_bitmap);
-
-	} else if (!ps_bit_set && !suspend_bit_set) {
-		hdd_debug("Both PS and Suspend are unset, sending disable to FW");
-		status =
-			ucfg_pmo_tgt_psoc_send_idle_roam_suspend_mode(hdd_ctx->psoc,
-								      enable);
-		if (QDF_IS_STATUS_ERROR(status))
-			hdd_err("Failed to send enable idle roam suspend mode to FW, status: %d",
-				status);
-		else
-			qdf_clear_bit(IDLE_ROAM_ENABLED,
-				      link_info->link_idle_roam_bitmap);
-	} else {
-		hdd_debug("idle_roam_bmap state: PS=%d, Suspend=%d — no FW update",
-			  ps_bit_set, suspend_bit_set);
-	}
-
-	return status;
-}
-
 #if defined(WLAN_FEATURE_11BE_MLO) && defined(CFG80211_11BE_BASIC)
 #ifdef WLAN_HDD_MULTI_VDEV_SINGLE_NDEV
 int wlan_hdd_set_mlo_ps(struct hdd_adapter *adapter,
@@ -3187,9 +3144,6 @@ static int __wlan_hdd_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 	status = wlan_hdd_set_ps(link_info, adapter->mac_addr.bytes,
 				 allow_power_save, timeout);
 
-	hdd_update_send_idle_roam_bitmap(link_info, hdd_ctx,
-					 allow_power_save,
-					 IDLE_ROAM_POWER_SAVE_CMD);
 exit:
 	/* Cache the powersave state for success case */
 	if (!status)

@@ -92,6 +92,7 @@
 #include "wlan_tdls_api.h"
 #include "wlan_twt_ucfg_ext_api.h"
 #include "wlan_ll_sap_api.h"
+#include "wlan_wfa_tgt_if_tx_api.h"
 
 static QDF_STATUS init_sme_cmd_list(struct mac_context *mac);
 
@@ -9330,16 +9331,15 @@ QDF_STATUS sme_update_connect_debug(mac_handle_t mac_handle, uint32_t set_value)
  * Return QDF_STATUS
  */
 QDF_STATUS sme_ap_disable_intra_bss_fwd(mac_handle_t mac_handle,
-					uint8_t sessionId,
-					bool disablefwd)
+					 uint8_t sessionId,
+					 bool disablefwd)
 {
 	struct mac_context *mac = MAC_CONTEXT(mac_handle);
-	int status = QDF_STATUS_SUCCESS;
-	QDF_STATUS qdf_status = QDF_STATUS_SUCCESS;
+	QDF_STATUS status;
 	struct scheduler_msg message = {0};
-	tpDisableIntraBssFwd pSapDisableIntraFwd = NULL;
+	tpDisableIntraBssFwd pSapDisableIntraFwd;
 
-	/* Prepare the request to send to SME. */
+	/* Prepare the request to send to SME */
 	pSapDisableIntraFwd = qdf_mem_malloc(sizeof(tDisableIntraBssFwd));
 	if (!pSapDisableIntraFwd)
 		return QDF_STATUS_E_NOMEM;
@@ -9348,22 +9348,21 @@ QDF_STATUS sme_ap_disable_intra_bss_fwd(mac_handle_t mac_handle,
 	pSapDisableIntraFwd->disableintrabssfwd = disablefwd;
 
 	status = sme_acquire_global_lock(&mac->sme);
-
 	if (QDF_IS_STATUS_ERROR(status)) {
 		qdf_mem_free(pSapDisableIntraFwd);
-		return QDF_STATUS_E_FAILURE;
+		return status;
 	}
-	/* serialize the req through MC thread */
+
+	/* Serialize the req through MC thread */
 	message.bodyptr = pSapDisableIntraFwd;
 	message.type = WMA_SET_SAP_INTRABSS_DIS;
-	qdf_status = scheduler_post_message(QDF_MODULE_ID_SME,
-					    QDF_MODULE_ID_WMA,
-					    QDF_MODULE_ID_WMA,
-					    &message);
-	if (QDF_IS_STATUS_ERROR(status)) {
-		status = QDF_STATUS_E_FAILURE;
+	status = scheduler_post_message(QDF_MODULE_ID_SME,
+					QDF_MODULE_ID_WMA,
+					QDF_MODULE_ID_WMA,
+					&message);
+	if (QDF_IS_STATUS_ERROR(status))
 		qdf_mem_free(pSapDisableIntraFwd);
-	}
+
 	sme_release_global_lock(&mac->sme);
 
 	return status;
@@ -11460,6 +11459,17 @@ void sme_update_tgt_he_cap(mac_handle_t mac_handle,
 	if (cfg_in_range(CFG_HE_FRAGMENTATION, value))
 		mac_ctx->he_cap_5g.fragmentation = value;
 
+	/*
+	 * HE SMPS follows HT SMPS configuration (gEnableHtSMPS).
+	 * If HT SMPS is disabled, HE SMPS is also disabled for consistency.
+	 */
+	mac_ctx->he_cap_2g.he_dynamic_smps =
+		mac_ctx->mlme_cfg->ht_caps.enable_smps ? cfg->he_cap_2g.he_dynamic_smps : 0;
+	mac_ctx->he_cap_5g.he_dynamic_smps =
+		mac_ctx->mlme_cfg->ht_caps.enable_smps ? cfg->he_cap_5g.he_dynamic_smps : 0;
+	mlme_debug("he smps 2g %d 5g %d", mac_ctx->he_cap_2g.he_dynamic_smps,
+		   mac_ctx->he_cap_5g.he_dynamic_smps);
+
 	qdf_mem_copy(&mac_ctx->he_cap_2g_orig,
 		     &mac_ctx->he_cap_2g,
 		     sizeof(tDot11fIEhe_cap));
@@ -13240,23 +13250,32 @@ uint32_t sme_get_wni_dot11_mode(mac_handle_t mac_handle)
 }
 
 /**
- * sme_create_mon_session() - post message to create PE session for monitormode
- * operation
+ * sme_create_pe_session() - post message to create PE session
  * @mac_handle: Opaque handle to the global MAC context
  * @bssid: pointer to bssid
  * @vdev_id: sme session id
+ * @op_mode: operating mode
  *
  * Return: QDF_STATUS_SUCCESS on success, non-zero error code on failure.
  */
-QDF_STATUS sme_create_mon_session(mac_handle_t mac_handle, uint8_t *bss_id,
-				  uint8_t vdev_id)
+QDF_STATUS sme_create_pe_session(mac_handle_t mac_handle, uint8_t *bss_id,
+				 uint8_t vdev_id, enum QDF_OPMODE op_mode)
 {
 	QDF_STATUS status = QDF_STATUS_E_FAILURE;
 	struct sir_create_session *msg;
 
 	msg = qdf_mem_malloc(sizeof(*msg));
 	if (msg) {
-		msg->type = eWNI_SME_MON_INIT_SESSION;
+		if (op_mode == QDF_MONITOR_MODE) {
+			msg->type = eWNI_SME_MON_INIT_SESSION;
+		} else if (op_mode == QDF_PASSTHRU_MODE) {
+			msg->type = eWNI_SME_PASSTHRU_INIT_SESSION;
+		} else {
+			sme_err("op_mode:%d not supported", op_mode);
+			qdf_mem_free(msg);
+			return status;
+		}
+
 		msg->vdev_id = vdev_id;
 		msg->msg_len = sizeof(*msg);
 		qdf_mem_copy(msg->bss_id.bytes, bss_id, QDF_MAC_ADDR_SIZE);
@@ -13265,14 +13284,24 @@ QDF_STATUS sme_create_mon_session(mac_handle_t mac_handle, uint8_t *bss_id,
 	return status;
 }
 
-QDF_STATUS sme_delete_mon_session(mac_handle_t mac_handle, uint8_t vdev_id)
+QDF_STATUS sme_delete_pe_session(mac_handle_t mac_handle, uint8_t vdev_id,
+				 enum QDF_OPMODE op_mode)
 {
 	QDF_STATUS status = QDF_STATUS_E_FAILURE;
 	struct sir_delete_session *msg;
 
 	msg = qdf_mem_malloc(sizeof(*msg));
 	if (msg) {
-		msg->type = eWNI_SME_MON_DEINIT_SESSION;
+		if (op_mode == QDF_MONITOR_MODE) {
+			msg->type = eWNI_SME_MON_DEINIT_SESSION;
+		} else if (op_mode == QDF_PASSTHRU_MODE) {
+			msg->type = eWNI_SME_PASSTHRU_DEINIT_SESSION;
+		} else {
+			sme_err("op_mode:%d not supported", op_mode);
+			qdf_mem_free(msg);
+			return status;
+		}
+
 		msg->vdev_id = vdev_id;
 		msg->msg_len = sizeof(*msg);
 		status = umac_send_mb_message_to_mac(msg);
@@ -15978,6 +16007,28 @@ void sme_set_mlo_assoc_link_band(mac_handle_t mac_handle, uint8_t vdev_id,
 	wlan_mlme_set_sta_mlo_conn_band_bmp(mac_ctx->psoc, val);
 }
 
+void sme_send_ext_mld_cap_wfatest_cmd(mac_handle_t mac_handle, uint8_t vdev_id,
+				      uint8_t value)
+{
+	struct mac_context *mac_ctx = MAC_CONTEXT(mac_handle);
+	struct wlan_objmgr_vdev *vdev;
+	struct set_wfatest_params wfa_param = {0};
+
+	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(mac_ctx->psoc, vdev_id,
+						    WLAN_LEGACY_SME_ID);
+	if (!vdev)
+		return;
+
+	wfa_param.vdev_id = vdev_id;
+	wfa_param.value = value;
+
+	wfa_param.cmd = WFA_CONFIG_ML;
+	sme_debug("send wfa test config for ext MLD cap support: %d", value);
+
+	wlan_send_wfatest_cmd(vdev, &wfa_param);
+	wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_SME_ID);
+}
+
 void sme_set_eht_testbed_def(mac_handle_t mac_handle, uint8_t vdev_id)
 {
 	struct mac_context *mac_ctx = MAC_CONTEXT(mac_handle);
@@ -16079,6 +16130,7 @@ void sme_set_eht_testbed_def(mac_handle_t mac_handle, uint8_t vdev_id)
 	wlan_mlme_set_sta_mlo_conn_max_num(mac_ctx->psoc, 1);
 	ucfg_mlme_set_bss_color_collision_det_sta(mac_ctx->psoc, false);
 	wlan_mlme_set_exclude_ext_mld_cap(mac_ctx->psoc, true);
+	sme_send_ext_mld_cap_wfatest_cmd(mac_handle, vdev_id, false);
 }
 
 static inline
@@ -16141,6 +16193,7 @@ void sme_reset_eht_caps(mac_handle_t mac_handle, uint8_t vdev_id)
 	wlan_mlme_set_eht_mld_id(mac_ctx->psoc, 0);
 	wlan_mlme_set_ext_mld_cap_supp(mac_ctx->psoc, true);
 	wlan_mlme_set_exclude_ext_mld_cap(mac_ctx->psoc, false);
+	sme_send_ext_mld_cap_wfatest_cmd(mac_handle, vdev_id, true);
 }
 
 void sme_update_eht_cap_nss(mac_handle_t mac_handle, uint8_t vdev_id,
@@ -17292,10 +17345,74 @@ QDF_STATUS sme_get_ani_level(mac_handle_t mac_handle, uint32_t *freqs,
 #endif /* FEATURE_ANI_LEVEL_REQUEST */
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
+static inline
+void sme_set_monitor_mode_cb(struct mac_context *mac,
+			     void (*monitor_mode_cb)(uint8_t vdev_id,
+						     bool is_up))
+{
+	mac->sme.monitor_mode_cb = monitor_mode_cb;
+}
 
-QDF_STATUS sme_set_monitor_mode_cb(mac_handle_t mac_handle,
-				   void (*monitor_mode_cb)(uint8_t vdev_id,
-							   bool is_up))
+static inline
+void sme_invoke_monitor_mode_cb(struct mac_context *mac, uint8_t vdev_id,
+				bool is_up)
+{
+	if (mac->sme.monitor_mode_cb)
+		mac->sme.monitor_mode_cb(vdev_id, is_up);
+}
+
+#else
+static inline
+void sme_set_monitor_mode_cb(struct mac_context *mac,
+			     void (*monitor_mode_cb)(uint8_t vdev_id,
+						     bool is_up))
+{
+}
+
+static inline
+void sme_invoke_monitor_mode_cb(struct mac_context *mac, uint8_t vdev_id,
+				bool is_up)
+{
+}
+#endif
+
+#ifdef DRIVER_PASSTHRU_MODE
+static inline
+void sme_set_passthrough_mode_cb(struct mac_context *mac,
+				 void (*passthrough_mode_cb)(uint8_t vdev_id,
+							     bool is_up))
+{
+	mac->sme.passthrough_mode_cb = passthrough_mode_cb;
+}
+
+static inline
+void sme_invoke_passthrough_mode_cb(struct mac_context *mac, uint8_t vdev_id,
+				    bool is_up)
+{
+	if (mac->sme.passthrough_mode_cb)
+		mac->sme.passthrough_mode_cb(vdev_id, is_up);
+}
+#else
+static inline
+void sme_set_passthrough_mode_cb(struct mac_context *mac,
+				 void (*passthrough_mode_cb)(uint8_t vdev_id,
+							     bool is_up))
+{
+}
+
+static inline
+void sme_invoke_passthrough_mode_cb(struct mac_context *mac, uint8_t vdev_id,
+				    bool is_up)
+{
+}
+#endif
+
+#if defined(FEATURE_MONITOR_MODE_SUPPORT) || defined(DRIVER_PASSTHRU_MODE)
+QDF_STATUS sme_set_op_mode_cb(mac_handle_t mac_handle,
+			      void (*monitor_mode_cb)(uint8_t vdev_id,
+						      bool is_up),
+			      void (*passthrough_mode_cb)(uint8_t vdev_id,
+							  bool is_up))
 {
 	QDF_STATUS qdf_status;
 	struct mac_context *mac = MAC_CONTEXT(mac_handle);
@@ -17305,7 +17422,9 @@ QDF_STATUS sme_set_monitor_mode_cb(mac_handle_t mac_handle,
 		sme_err("Failed to acquire sme lock; status: %d", qdf_status);
 		return qdf_status;
 	}
-	mac->sme.monitor_mode_cb = monitor_mode_cb;
+
+	sme_set_monitor_mode_cb(mac, monitor_mode_cb);
+	sme_set_passthrough_mode_cb(mac, passthrough_mode_cb);
 	sme_release_global_lock(&mac->sme);
 
 	return qdf_status;
@@ -17315,17 +17434,22 @@ QDF_STATUS sme_process_monitor_mode_vdev_evt(uint8_t vdev_id, bool is_up)
 {
 	mac_handle_t mac_handle;
 	struct mac_context *mac;
+	enum QDF_OPMODE op_mode;
 
 	mac_handle = cds_get_context(QDF_MODULE_ID_SME);
 	if (!mac_handle)
 		return QDF_STATUS_E_INVAL;
 
 	mac = MAC_CONTEXT(mac_handle);
+	op_mode = wlan_get_opmode_from_vdev_id(mac->pdev, vdev_id);
 
-	if (mac->sme.monitor_mode_cb)
-		mac->sme.monitor_mode_cb(vdev_id, is_up);
-	else {
-		sme_warn_rl("monitor_mode_cb is not registered");
+	if (op_mode == QDF_MONITOR_MODE) {
+		sme_invoke_monitor_mode_cb(mac, vdev_id, is_up);
+	} else if (op_mode == QDF_PASSTHRU_MODE) {
+		sme_invoke_passthrough_mode_cb(mac, vdev_id, is_up);
+	} else {
+		sme_warn_rl("no callback registered for mode:%d",
+			    op_mode);
 		return QDF_STATUS_E_FAILURE;
 	}
 

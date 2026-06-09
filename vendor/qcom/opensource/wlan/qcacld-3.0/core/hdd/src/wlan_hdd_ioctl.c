@@ -3347,10 +3347,8 @@ int hdd_handle_apf_mode_on_idle(struct hdd_context *hdd_ctx,
 		}
 	}
 
-	status = hdd_update_send_idle_roam_bitmap(link_info, hdd_ctx,
-						  idle_monitor,
-						  IDLE_ROAM_SETSUSPEND_CMD);
-
+	status = ucfg_pmo_tgt_psoc_send_idle_roam_suspend_mode(hdd_ctx->psoc,
+							       idle_monitor);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		hdd_debug("Send suspend mode to fw failed");
 		return -EINVAL;

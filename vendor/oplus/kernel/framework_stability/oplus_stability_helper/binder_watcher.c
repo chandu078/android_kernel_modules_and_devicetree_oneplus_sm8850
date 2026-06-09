@@ -2,6 +2,32 @@
 #include "frk_netlink.h"
 #include "binder_watcher.h"
 
+#define EXT_SERVICES_PROCESS_NAME	"ext.services"
+
+/*
+ * Processes exempt from async binder spam detection (matched by process name suffix).
+ *
+ * ext.services sends health check callbacks (RemoteCallback.sendResult)
+ * as oneway transactions to system_server. If rejected by spam detection, the
+ * callback is silently lost (RemoteCallback catches RemoteException), causing
+ * networkstack health check timeout -> staged rollback -> reboot.
+ */
+
+static bool is_async_spam_exempt(size_t size)
+{
+	const char *comm = current->group_leader->comm;
+	size_t comm_len = strlen(comm);
+	size_t suffix_len = strlen(EXT_SERVICES_PROCESS_NAME);
+
+	if (comm_len > suffix_len && !strncmp(comm + comm_len - suffix_len, EXT_SERVICES_PROCESS_NAME, suffix_len)) {
+		binder_watcher_debug("ext.services is async spam exempt: uid=%d, size=%zu, thread=%s, process=%s\n",
+			__kuid_val(current_real_cred()->euid), size, current->comm, comm);
+		return true;
+	}
+
+	return false;
+}
+
 static bool is_system_server(struct task_struct *t)
 {
 	if (!t)
@@ -132,6 +158,9 @@ void binder_buffer_watcher(void *ignore, size_t size, size_t *free_async_space,
 	if (is_async) {
 		if (alloc->free_async_space > alloc->buffer_size / 3)
 			//if there is still 2/3 free async space left, do nothing
+			goto watcher_done;
+
+		if (is_async_spam_exempt(size))
 			goto watcher_done;
 
 	 	//if this async transaction is from surfaceflinger backgroud thread or main thread, do nothing.

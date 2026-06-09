@@ -1160,6 +1160,7 @@ QDF_STATUS wma_handle_channel_switch_resp(tp_wma_handle wma,
 	/* Indicate channel switch failure to LIM */
 	if (QDF_IS_STATUS_ERROR(rsp->status) &&
 	    (iface->type == WMI_VDEV_TYPE_MONITOR ||
+	     iface->type == WMI_VDEV_TYPE_WIFI_PASSTHRU ||
 	     wma_is_vdev_in_ap_mode(wma, rsp->vdev_id) ||
 	     mlme_is_chan_switch_in_progress(iface->vdev))) {
 		mlme_set_chan_switch_in_progress(iface->vdev, false);
@@ -1469,6 +1470,7 @@ QDF_STATUS wma_vdev_start_resp_handler(struct vdev_mlme_obj *vdev_mlme,
 
 	if (mlme_is_chan_switch_in_progress(iface->vdev) ||
 	    iface->type == WMI_VDEV_TYPE_MONITOR ||
+	    iface->type == WMI_VDEV_TYPE_WIFI_PASSTHRU ||
 	    (iface->type == WMI_VDEV_TYPE_STA &&
 	     (assoc_type == VDEV_ASSOC || assoc_type == VDEV_REASSOC))) {
 		status = wma_handle_channel_switch_resp(wma,
@@ -3444,6 +3446,7 @@ QDF_STATUS wma_post_vdev_create_setup(struct wlan_objmgr_vdev *vdev)
 	case WMI_VDEV_TYPE_NAN:
 	case WMI_VDEV_TYPE_OCB:
 	case WMI_VDEV_TYPE_MONITOR:
+	case WMI_VDEV_TYPE_WIFI_PASSTHRU:
 		status = ucfg_get_enable_sifs_burst(wma_handle->psoc,
 						    &enable_sifs_burst);
 		if (QDF_IS_STATUS_ERROR(status))
@@ -4450,13 +4453,14 @@ void wma_remove_req(tp_wma_handle wma, uint8_t vdev_id,
 	qdf_mem_free(req_msg);
 }
 
-#define MAX_VDEV_SET_BSS_PARAMS 5
+#define MAX_VDEV_SET_BSS_PARAMS 6
 /* params being sent:
  * 1.wmi_vdev_param_beacon_interval
  * 2.wmi_vdev_param_dtim_period
  * 3.wmi_vdev_param_tx_pwrlimit
  * 4.wmi_vdev_param_slot_time
  * 5.wmi_vdev_param_protection_mode
+ * 6.wmi_vdev_param_su_txop_burst_limit_us
  */
 
 /**
@@ -4483,9 +4487,24 @@ wma_vdev_set_bss_params(tp_wma_handle wma, int vdev_id,
 	uint8_t index = 0;
 	enum ieee80211_protmode prot_mode;
 	uint32_t keep_alive_period, keep_alive_method;
+	uint32_t edca_txop_duration_us;
 	QDF_STATUS ret;
+	struct mac_context *mac_ctx = cds_get_context(QDF_MODULE_ID_PE);
+	struct wlan_objmgr_vdev *vdev;
 
 	ret = QDF_STATUS_E_FAILURE;
+
+	if (!mac_ctx) {
+		wma_err("Failed to get mac_ctx");
+		goto error;
+	}
+
+	vdev = intr[vdev_id].vdev;
+	if (!vdev) {
+		wma_err("vdev is NULL for vdev_id: %d", vdev_id);
+		goto error;
+	}
+
 	/* Beacon Interval setting */
 	ret = mlme_check_index_setparam(setparam,
 					wmi_vdev_param_beacon_interval,
@@ -4553,6 +4572,24 @@ wma_vdev_set_bss_params(tp_wma_handle wma, int vdev_id,
 		wma_debug("failed to send wmi_vdev_param_protection_mode to fw");
 		goto error;
 	}
+
+	/* Send su_txop_burst_limit_us parameter for STA mode on 5GHz */
+	if (intr[vdev_id].type == WMI_VDEV_TYPE_STA &&
+	    WLAN_REG_IS_5GHZ_CH_FREQ(vdev->vdev_mlme.bss_chan->ch_freq)) {
+		edca_txop_duration_us =
+		    wlan_mlme_get_edca_txop_duration_ms(mac_ctx->psoc) * 1024;
+
+		ret = mlme_check_index_setparam(
+					setparam,
+					wmi_vdev_param_su_txop_burst_limit_us,
+					edca_txop_duration_us, index++,
+					MAX_VDEV_SET_BSS_PARAMS);
+		if (QDF_IS_STATUS_ERROR(ret)) {
+			wma_debug("failed to set wmi_vdev_param_su_txop_burst_limit_us");
+			goto error;
+		}
+	}
+
 	ret = wma_send_multi_pdev_vdev_set_params(MLME_VDEV_SETPARAM,
 						  vdev_id, setparam, index);
 	if (QDF_IS_STATUS_ERROR(ret)) {
@@ -4669,6 +4706,52 @@ QDF_STATUS wma_pre_vdev_start_setup(uint8_t vdev_id,
 	return status;
 }
 
+/**
+ * wma_vdev_set_cck_param - set vdev CCK param
+ * @wma: wma handle
+ * @vdev_id: vdev id
+ *
+ * Return: NA
+ */
+static
+void wma_vdev_set_cck_param(tp_wma_handle wma, uint8_t vdev_id)
+{
+	struct wlan_objmgr_psoc *psoc;
+	struct wma_txrx_node *intr;
+	struct wlan_mlme_psoc_ext_obj *mlme_psoc_obj = NULL;
+	enum QDF_OPMODE op_mode;
+	enum cck_mode_index cck_idx;
+	uint32_t cck_support = 0;
+
+	intr = &wma->interfaces[vdev_id];
+	if (!intr || !intr->vdev) {
+		wma_err("Invalid interface or vdev");
+		return;
+	}
+
+	psoc = wma->psoc;
+
+	mlme_psoc_obj = mlme_get_psoc_ext_obj(psoc);
+	if (!mlme_psoc_obj) {
+		wma_err("Failed to get MLME Obj");
+		return;
+	}
+
+	op_mode = wlan_vdev_mlme_get_opmode(intr->vdev);
+
+	cck_idx = wlan_get_mode_index_from_mode(op_mode);
+	if (cck_idx >= MAX_CCK_IDX) {
+		wma_err("invalid index %d", cck_idx);
+		return;
+	}
+	cck_support = QDF_GET_BITS(
+				mlme_psoc_obj->cfg.rates.cck_rx_tx_support_mode,
+				cck_idx * NUM_CCK_BITS,
+				NUM_CCK_BITS);
+	wma_vdev_set_param(wma->wmi_handle, vdev_id, wmi_vdev_param_cck_support,
+			    cck_support);
+}
+
 QDF_STATUS wma_post_vdev_start_setup(uint8_t vdev_id)
 {
 	QDF_STATUS status = QDF_STATUS_SUCCESS;
@@ -4725,6 +4808,7 @@ QDF_STATUS wma_post_vdev_start_setup(uint8_t vdev_id)
 
 	wma_vdev_set_he_bss_params(wma, vdev_id,
 				   &mlme_obj->proto.he_ops_info);
+
 #if defined(WLAN_FEATURE_11BE)
 	wma_vdev_set_eht_bss_params(wma, vdev_id,
 				    &mlme_obj->proto.eht_ops_info);
@@ -6625,6 +6709,11 @@ void wma_delete_bss(tp_wma_handle wma, uint8_t vdev_id)
 	status = wlan_vdev_get_bss_peer_mac(iface->vdev, &bssid);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		wma_err("vdev id %d : failed to get bssid", vdev_id);
+		if (cm_get_ho_disconnect_pending(iface->vdev)) {
+			wma_err("handle by ho fail");
+			wma_delete_bss_ho_fail(wma, vdev_id);
+			return;
+		}
 		goto out;
 	}
 
@@ -7128,6 +7217,11 @@ QDF_STATUS wma_vdev_create_set_param(struct wlan_objmgr_vdev *vdev)
 	bool disable_twt_info_frame;
 	bool is_twt_disabled_on_scan;
 	enum QDF_OPMODE opmode;
+	tp_wma_handle wma;
+
+	wma = cds_get_context(QDF_MODULE_ID_WMA);
+	if (!wma)
+		return QDF_STATUS_E_FAILURE;
 
 	if (!mac)
 		return QDF_STATUS_E_FAILURE;
@@ -7433,6 +7527,7 @@ QDF_STATUS wma_vdev_create_set_param(struct wlan_objmgr_vdev *vdev)
 		goto error;
 	}
 
+
 	status = wma_send_multi_pdev_vdev_set_params(MLME_VDEV_SETPARAM,
 						     vdev_id, setparam, index);
 	if (QDF_IS_STATUS_ERROR(status)) {
@@ -7440,6 +7535,8 @@ QDF_STATUS wma_vdev_create_set_param(struct wlan_objmgr_vdev *vdev)
 		status = QDF_STATUS_E_FAILURE;
 		goto error;
 	}
+
+	wma_vdev_set_cck_param(wma, vdev_id);
 error:
 	return status;
 }

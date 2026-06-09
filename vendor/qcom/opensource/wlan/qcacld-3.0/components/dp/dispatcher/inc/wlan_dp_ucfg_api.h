@@ -474,6 +474,23 @@ QDF_STATUS ucfg_dp_mon_register_txrx_ops(struct wlan_objmgr_vdev *vdev)
 }
 #endif
 
+#ifdef DRIVER_PASSTHRU_MODE
+/**
+ * ucfg_dp_passthrough_register_txrx_ops() - Register ops for Passthrough
+ *  TX/RX operations
+ * @vdev: vdev mapped to Passthrough mode DP interface
+ *
+ * Return: 0 on success and non zero on failure.
+ */
+QDF_STATUS ucfg_dp_passthrough_register_txrx_ops(struct wlan_objmgr_vdev *vdev);
+#else
+static inline
+QDF_STATUS ucfg_dp_passthrough_register_txrx_ops(struct wlan_objmgr_vdev *vdev)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+#endif
+
 /**
  * ucfg_dp_softap_register_txrx_ops() - Register ops for TX/RX operations
  * @vdev: vdev mapped to SAP mode DP interface
@@ -2086,6 +2103,30 @@ void ucfg_dp_recover_mon_conf_flags(struct wlan_objmgr_psoc *psoc);
 void
 ucfg_dp_rx_aggr_dis_req(struct wlan_objmgr_vdev *vdev,
 			enum ctrl_rx_aggr_client_id id, bool disable);
+
+#ifdef WLAN_FEATURE_TSF_UPLINK_DELAY
+/**
+ * ucfg_dp_dump_periodic_custom_stats_enable_req() - Request dump periodic
+ *						     custom stats enable/disable
+ * @vdev: vdev mapped to DP interface
+ * @enable: Enable or disable dump periodic custom stats
+ *
+ * Return: None
+ */
+void
+ucfg_dp_dump_periodic_custom_stats_enable_req(struct wlan_objmgr_vdev *vdev,
+					      bool enable);
+
+/**
+ * ucfg_dp_get_dump_periodic_custom_stats_enable() - Get dump periodic custom
+ *						     stats enable status
+ * @vdev: vdev mapped to DP interface
+ *
+ * Return: true if dump periodic custom stats is enabled, false otherwise
+ */
+bool
+ucfg_dp_get_dump_periodic_custom_stats_enable(struct wlan_objmgr_vdev *vdev);
+#endif
 
 #ifdef WLAN_DP_FEATURE_STC
 /**

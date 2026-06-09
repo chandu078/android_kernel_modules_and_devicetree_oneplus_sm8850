@@ -80,8 +80,14 @@ struct gen8_device {
 	bool nc_overrides_enabled;
 	/** @slice_mask: The bitmask of active GPU slices */
 	u32 slice_mask;
-	/** @tsense_work: Work struct for TSENSE suspend in parallel with GPU suspend */
+	/** @tsense_state: Current TSENSE state */
+	bool tsense_state;
+	/** @tsense_state: Requested TSENSE state */
+	bool tsense_req_state;
+	/** @tsense_work: Work struct for TSENSE update */
 	struct work_struct tsense_work;
+	/** @tsense_wq: Workqueue struct for TSENSE update */
+	struct workqueue_struct *tsense_wq;
 };
 
 /**
