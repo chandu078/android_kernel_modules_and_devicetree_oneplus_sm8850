@@ -8,6 +8,7 @@ kernel_dtstree(
             "qcom/**/*.dtsi",
             "qcom/**/*.dts",
             "qcom/**/*.dtso",
+            "qcom/**/Makefile",
             "oplus/Makefile",
             "oplus/**/*.dtsi",
             "oplus/**/*.dts",

@@ -6,6 +6,8 @@
 # Combined dtb target is also generated using the fdt_overlay tool.
 # dtb-y += <base>-<board>.dtb
 
+ifneq (,)
+
 add-overlays = $(foreach o,$1,$(foreach b,$2,$(eval $(basename $b)-$(basename $o)-dtbs = $b $o) $(basename $b)-$(basename $o).dtb))
 
 # canoe-dtb-y is list of DTBs to install when doing non-overlay build
@@ -453,6 +455,9 @@ dtb-y += $(canoe_tuivm-dtb-y)
 endif
 endif
 
+endif
+
 always-y        := $(dtb-y)
 subdir-y        := $(dts-dirs)
+subdir-y        += audio bt camera data display dsp eSE eva graphics mm mmrm nfc synx video wlan
 clean-files     := *.dtb *.dtbo
