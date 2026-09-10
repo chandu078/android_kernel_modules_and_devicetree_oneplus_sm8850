@@ -1,1 +1,0 @@
-../../../opensource/mm-drivers/mm_driver_board.mk

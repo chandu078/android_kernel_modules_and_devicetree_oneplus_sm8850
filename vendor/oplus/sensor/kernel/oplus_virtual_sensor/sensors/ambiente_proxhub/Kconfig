@@ -1,4 +1,0 @@
-
-config OPLUS_FEATURE_AMBIENTE_PROX
-	tristate "ambiente_proxhub for MediaTek package"
-	default n

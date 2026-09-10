@@ -1,1 +1,0 @@
-../../../opensource/datarmnet-ext/datarmnet_ext_dlkm_vendor_board.mk

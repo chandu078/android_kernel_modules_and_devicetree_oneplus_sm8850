@@ -1,1 +1,0 @@
-../../../opensource/securemsm-kernel/securemsm_kernel_vendor_board.mk

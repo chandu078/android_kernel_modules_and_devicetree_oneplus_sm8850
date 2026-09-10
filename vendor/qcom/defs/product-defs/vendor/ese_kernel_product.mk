@@ -1,1 +1,0 @@
-../../../../st/opensource/eSE-driver/ese_kernel_product.mk

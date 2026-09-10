@@ -1,1 +1,0 @@
-../../../opensource/dsp-kernel/dsp_kernel_product.mk

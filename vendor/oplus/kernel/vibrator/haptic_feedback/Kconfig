@@ -1,5 +1,0 @@
-config HAPTIC_FEEDBACK
-    tristate "Haptic feedback"
-    depends on I2C
-    help
-      This option enables support for Haptic Feedback Driver.

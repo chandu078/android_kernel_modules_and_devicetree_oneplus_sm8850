@@ -1,1 +1,0 @@
-../../../opensource/eva-kernel/eva_kernel_product.mk

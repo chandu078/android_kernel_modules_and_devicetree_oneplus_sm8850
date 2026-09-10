@@ -1,1 +1,0 @@
-../../../opensource/datarmnet/datarmnet_dlkm_vendor_product.mk

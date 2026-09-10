@@ -1,3 +1,0 @@
-config OPLUS_FEATURE_LUX_AOD
-	tristate "lux_aodhub for MediaTek package"
-	default n

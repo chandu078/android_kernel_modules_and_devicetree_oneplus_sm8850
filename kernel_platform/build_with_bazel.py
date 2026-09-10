@@ -1,1 +1,0 @@
-soc-repo/build_with_bazel.py

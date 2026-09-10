@@ -1,4 +1,0 @@
-
-config OPLUS_FEATURE_PICKUP_DETECT
-	tristate "pickup_detecthub for MediaTek package"
-	default n

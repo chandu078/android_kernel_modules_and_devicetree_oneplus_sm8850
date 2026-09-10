@@ -1,1 +1,0 @@
-../../../../nxp/opensource/driver/nfc_kernel_dlkm_vendor_product.mk

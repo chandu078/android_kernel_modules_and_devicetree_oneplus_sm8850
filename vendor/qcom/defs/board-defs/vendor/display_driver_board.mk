@@ -1,1 +1,0 @@
-../../../opensource/display-drivers/display_driver_board.mk

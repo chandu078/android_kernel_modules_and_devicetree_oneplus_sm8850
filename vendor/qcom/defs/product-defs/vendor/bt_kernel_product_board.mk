@@ -1,1 +1,0 @@
-../../../opensource/bt-kernel/bt_kernel_product_board.mk

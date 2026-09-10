@@ -1,4 +1,0 @@
-
-config OPLUS_FEATURE_ROTATION_DETECT
-    tristate "rotation_detect for MediaTek package"
-    default n

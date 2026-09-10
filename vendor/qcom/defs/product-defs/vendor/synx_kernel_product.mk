@@ -1,1 +1,0 @@
-../../../opensource/synx-kernel/synx_kernel_product.mk

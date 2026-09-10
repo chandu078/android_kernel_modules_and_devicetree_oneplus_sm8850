@@ -1,6 +1,0 @@
-config OPLUS_FEATURE_GEAS_CPU
-        tristate "geas cpu"
-        default n
-        help
-          turning for game
-

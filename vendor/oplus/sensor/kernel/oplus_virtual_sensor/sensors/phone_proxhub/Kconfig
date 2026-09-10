@@ -1,4 +1,0 @@
-
-config OPLUS_FEATURE_PHONE_PROX
-	tristate "phone_proxhub for MediaTek package"
-	default n
