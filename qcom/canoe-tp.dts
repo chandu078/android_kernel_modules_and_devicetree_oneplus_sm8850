@@ -13,3 +13,7 @@
 		qcom,board-id = <0 0>;
 };
 
+
+#include "canoe-subsystems-common.dtsi"
+#include "canoe-subsystems-v1.dtsi"
+#include "canoe-subsystems-modem.dtsi"

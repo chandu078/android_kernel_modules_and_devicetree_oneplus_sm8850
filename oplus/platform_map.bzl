@@ -24,9 +24,15 @@ _platform_map = {
             {"name": "canoe-v2.dtb"},
         ],
         "dtbo_list": [
-            # keep sorted
-            {"name": "infiniti-24831-canoe-overlay.dtbo"},
-            {"name": "infiniti-24863-canoe-overlay.dtbo"},
+            # OEM bootloader entry order; do not sort by project.
+            {"name": "infiniti-0-24831-t0-canoe-overlay.dtbo"},
+            {"name": "infiniti-1-24863-t0-canoe-overlay.dtbo"},
+            {"name": "infiniti-2-24863-pre-t0-canoe-overlay.dtbo"},
+            {"name": "infiniti-3-24831-pre-t0-canoe-overlay.dtbo"},
+            {"name": "infiniti-4-24863-evb-canoe-overlay.dtbo"},
+            {"name": "infiniti-5-24831-production-canoe-overlay.dtbo"},
+            {"name": "infiniti-6-24863-production-canoe-overlay.dtbo"},
+            {"name": "infiniti-7-24831-evb-canoe-overlay.dtbo"},
         ],
     },
     "alor-interposer": {

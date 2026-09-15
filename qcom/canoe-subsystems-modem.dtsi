@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Subsystem includes for the Canoe modem configuration. */
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/soc/qcom,ipcc.h>
+#include <dt-bindings/interconnect/qcom,canoe.h>
+#include <dt-bindings/clock/qcom,gcc-canoe.h>
+#include <dt-bindings/clock/qcom,rpmh.h>
+#include "data/canoe-ipa.dtsi"
+
+#include "data/smem-mailbox.dtsi"

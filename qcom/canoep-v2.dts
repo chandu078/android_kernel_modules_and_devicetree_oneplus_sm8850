@@ -12,3 +12,6 @@
 	compatible = "qcom,canoep";
 	qcom,board-id = <0 0>;
 };
+
+#include "canoe-subsystems-common.dtsi"
+#include "canoe-subsystems-v2.dtsi"

@@ -3,10 +3,8 @@
  *   LiFenfen   2024/09/09  , select BDF by device-tree , bug id 7902090
  */
 
-/dts-v1/;
-/plugin/;
 #include <dt-bindings/interconnect/qcom,canoe.h>
-#include "../canoe-peach-cnss.dts"
+#include "../canoe-peach-cnss.dtsi"
 
 &wlan_peach {
 	//#ifdef OPLUS_FEATURE_WIFI_BEAM

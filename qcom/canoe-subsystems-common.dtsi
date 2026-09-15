@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Subsystem includes for the Canoe common configuration. */
+
+#include <dt-bindings/clock/qcom,gcc-canoe.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interconnect/qcom,canoe.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator-levels.h>
+
+#include "audio/canoe-audio.dtsi"
+
+#include "display/display/canoe-sde.dtsi"
+
+#include <dt-bindings/soc/qcom,ipcc.h>
+#include <dt-bindings/clock/qcom,videocc-canoe.h>
+#include <dt-bindings/clock/qcom,evacc-canoe.h>
+#include <dt-bindings/arm/msm/qti-smmu-proxy-dt-ids.h>
+#include "eva/canoe-eva.dtsi"
+
+#include "mm/hw_fence/canoe-hw-fence.dtsi"
+
+#include "mm/hfi_core/canoe-hfi-core.dtsi"
+
+#include <dt-bindings/clock/qcom,camcc-canoe.h>
+#include <dt-bindings/clock/qcom,dispcc-canoe.h>
+#include "mmrm/canoe/canoe-mmrm.dtsi"
+
+#include <dt-bindings/mailbox/qcom-ipcc.h>
+#include <dt-bindings/mailbox/qcom-ipcc-canoe.h>
+#include "synx/synx/canoe-synx.dtsi"
